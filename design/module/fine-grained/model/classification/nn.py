@@ -7,6 +7,8 @@ from sklearn.preprocessing import MinMaxScaler, MaxAbsScaler, StandardScaler, Ro
 import joblib
 import numpy as np
 
+tf.config.set_visible_devices([], 'GPU')
+
 scaler_dict = {
     'MinMax': MinMaxScaler(),
     'MaxAbs': MaxAbsScaler(),
@@ -21,9 +23,8 @@ class NN:
         # Initialize Model
         self.dnn_model = keras.Sequential()
         if scaler == 'BatchNorm':
-            normalizer = layers.Normalization(axis=-1)
-            normalizer.adapt(np.array(x_train))
-            self.dnn_model.add(normalizer)
+            self.dnn_model.add(layers.Input(shape=(x_train.shape[1],)))
+            self.dnn_model.add(layers.BatchNormalization())
         self.dnn_model.add(layers.Dense(128, activation='relu', input_dim=x_train.shape[1]))
         self.dnn_model.add(layers.Dense(16, activation='relu'))
         self.dnn_model.add(layers.Dense(1, activation='sigmoid'))
@@ -60,7 +61,7 @@ class NN:
 
         # Model Architecture
         if retrain:
-            self.dnn_model = tf.keras.models.load_model(self.model_path)
+            self.dnn_model = tf.keras.models.load_model(model_path)
         
         # Train the model
         callback = tf.keras.callbacks.EarlyStopping(monitor='loss', patience=3, min_delta=0.01)

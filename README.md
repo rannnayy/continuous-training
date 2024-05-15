@@ -7,4 +7,6 @@
                                                     |_____|                            |___/ 
 ```
 
-python3 -m sklearnex main.py -path /home/rani/rani/continuous-training/dataset/test_8_hours -dataset_name profile_v1.feat_v6_ts.readonly.dataset -data_train_duration_min 1 -data_retrain_duration_min 1 -data_eval_duration_min 1 -model_algo nn_clf -model_name nn_clf -dd_algo ip-based -output nn_clf_ip_based
+cd design/module/fine-grained
+
+python3 main.py -path /mnt/extra/continuous-training/dataset/test_8_hours -dataset_name profile_v1.feat_v6_ts.readonly.dataset -data_train_duration_min 15 -data_retrain_duration_min 1 -data_eval_duration_min 1 -model_algo nn_clf -model_name nn_clf -dd_algo ip-based -output nn_clf_ip_based
