@@ -52,22 +52,6 @@ def write_stats(filePath, statistics):
         text_file.write(statistics)
     print("===== output file : " + filePath)
 
-def time_dd(time, now_time):
-    if now_time % time == 0:
-        return True
-    return False
-
-def monitor(y_then, y_now, dd_algo, extra_params=[]):
-    if 'time' in dd_algo:
-        return time_dd(int(dd_algo.split('time_')[1].split('min')[0]), extra_params[0])
-    if dd_algo not in ['heuristics-based-labeler', 'model-cluster', 'model-networks']:
-        return drift_detectors[dd_algo](y_then, y_now)
-    else:
-        if dd_algo == 'heuristics-based-labeler':
-            return drift_detectors[dd_algo](y_then, y_now, extra_params[0], extra_params[1])
-        else:
-            return drift_detectors[dd_algo](y_then, y_now, extra_params[0])
-
 def eval(y_test, y_pred):
     cm = confusion_matrix(y_test, y_pred)
     cm_values = [0 for i in range(4)]
@@ -86,24 +70,6 @@ models = {
     'rf_clf': RandomForestClf
 }
 
-drift_detectors = {
-    'time': time_dd,
-    'ip-based': IPBased,
-    'heuristics-based-outlier': HeuristicsBasedOutlier,
-    'heuristics-based-quartile': HeuristicsBasedQuartile,
-    'heuristics-based-labeler': HeuristicsBasedLabeler,
-    'kolmogorov-smirnov': KolmogorovSmirnovTest,
-    'page-hinkley': PageHinkleyTest,
-    'population-stability-index': PopulationStabilityIndex,
-    'kullback-leibler': KullbackLeiblerTest,
-    'jensen-shannon': JensenShannonDistance,
-    'model-cluster': ModelCluster,
-    'model-networks': ModelClf,
-    # 'model-autoencoder': ModelAutoencoder,
-    # 'model-tree': ModelTree,
-    # 'model-recurrent': ModelRNN
-}
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-path", help="Path to the dataset folder", type=str, required=True)
@@ -112,34 +78,21 @@ if __name__ == '__main__':
     parser.add_argument("-data_retrain_duration_min", help="Data duration used for retraining (If not set, the window will be set equal to data_train_duration_min)", type=int, default=DATA_RETRAIN_DURATION_MIN)
     parser.add_argument("-data_eval_duration_min", help="Data duration used for each evaluation", type=int, default=DATA_EVAL_DURATION_MIN)
     parser.add_argument("-eval_period", help="Period of data for evaluation (hour)", type=float, default=1)
-    parser.add_argument("-roc_auc_threshold", help="ROC-AUC threshold for retraining (if using simple retraining condition, not specifying -model_algo)", type=float)
-    parser.add_argument("-batch_size", help="Training batch size", type=int, default=BATCH_SIZE)
-    parser.add_argument("-no_retrain", help="Add flag if no retraining is needed", action="store_true", default=False)
-    parser.add_argument("-model_algo", help="Machine Learning algorithm to use", choices=['nn_reg', 'nn_clf', 'rf_reg', 'rf_clf'], type=str, required=True)
     parser.add_argument("-model_name", help="Model's name upon saving", type=str, required=True)
-    parser.add_argument("-dd_algo", help="Drift detection algorithm to use", type=str, default='')
     parser.add_argument("-output", help="Output CSV file name upon saving", type=str, required=True)
     args = parser.parse_args()
-    
-    if (not args.no_retrain and args.dd_algo == ''):
-        print('Retrain has to choose the DD algo!')
-        exit()
 
     path = args.path
     dataset_name = args.dataset_name
     data_train_duration_min = args.data_train_duration_min
     data_retrain_duration_min = args.data_retrain_duration_min
     data_eval_duration_min = args.data_eval_duration_min
-    roc_auc_threshold = args.roc_auc_threshold
-    batch_size = args.batch_size
-    model_algo = args.model_algo
 
     # Prepare Output Directory
     timestamp = int(time.time_ns())
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output)
     output_vars = os.path.join(output_dir, 'parameters.txt')
-    output_drift_data = os.path.join(output_dir, 'drift_data.csv')
     create_output_dir(output_dir)
 
     # Regarding file
@@ -156,8 +109,6 @@ if __name__ == '__main__':
 
     data_eval_duration_ms = data_eval_duration_min * 60 * 1000
     print("Taking", data_eval_duration_ms, "ms data for every evaluation")
-
-    print("Batch size =", batch_size)
 
     pending_training_data = None
     num_rows = []
@@ -193,25 +144,11 @@ if __name__ == '__main__':
     x = dataset_train.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
     y = dataset_train["reject"].copy(deep=True)
 
-    # Get training throughput data for DD model dataset
-    initial_thpt = dataset_train['size']/dataset_train['latency']
-    summary_initial_thpt = np.array([int(np.percentile(initial_thpt, x)) for x in range(0, 101, 10)])
-    if args.dd_algo == 'heuristics-based-labeler':
-        initial_lat = dataset_train['latency']
-    
     # Train if model doesn't exist
-    # if not (os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib')) and os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))):
     # Specific output directory
     model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
     model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), False)
     print("train", len(y))
-    # else:
-    #     print("Just copy...")
-    #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + '_norm.joblib'))
-    #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
-    #     model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
-    #     model_instance.dnn_model = tf.keras.models.load_model(os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
-    #     model_instance.norm = joblib.load(os.path.join(output_cycle, args.model_name + '_norm.joblib'))
 
     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
     y_pred = model_instance.pred(x_test)
@@ -220,7 +157,7 @@ if __name__ == '__main__':
 
     curr_ts = data_train_duration_ms
     old_i = i
-    for i in range(old_i, old_i+int(args.eval_period*12)+1):
+    for i in range(old_i, old_i+int(args.eval_period*12)):
         print("="*20, i, "="*20)
         dataset_path = os.path.join(path, prefix + "_" + str(i), dataset_name)
         print("Dataset Path =>", dataset_path)
@@ -278,8 +215,6 @@ if __name__ == '__main__':
                 # Retraining
                 if args.dd_algo == 'heuristics-based-labeler':
                     do_retrain = monitor(initial_lat, initial_thpt, args.dd_algo, [current_lat, current_thpt])
-                elif 'time' in args.dd_algo:
-                    do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo, [((i-1)*5) + j])
                 else:
                     do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo)
                 if do_retrain:
