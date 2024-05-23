@@ -21,7 +21,6 @@ tf.config.set_visible_devices([], 'GPU')
 ############################ From NURD
 
 flashnet_feat_col = [
-    "io_type",
     "size",
     "queue_len",
     "prev_queue_len_1",
@@ -36,14 +35,12 @@ flashnet_feat_col = [
 ]
 
 ori_feat_col = [
-    "io_type",
     "size",
     "offset"
 ]
 
 task_cols = [
     "latency",
-    "io_type",
     "size",
     "queue_len",
     "prev_queue_len_1",
@@ -59,7 +56,6 @@ task_cols = [
 
 ori_task_cols = [
     "latency",
-    "io_type",
     "size",
     "offset"
 ]
@@ -377,7 +373,7 @@ tail = 0.9
 # p20 - p100: testing set  (predict on the slow IO)
 # ==============================================================================
 
-def transform_ground_truth(GT, prediction_result, alpha):
+def transform_ground_truth(prediction_result, alpha):
     '''
         Return the label directly in a list to use FlashNet's metrics calculation
         Input:
@@ -387,17 +383,10 @@ def transform_ground_truth(GT, prediction_result, alpha):
         Output:
             1. y_true, y_pred
     '''
-    total_size = len(GT)
-    y_true = []
+    total_size = len(prediction_result)
+    # print(total_size)
     y_pred = []
     for i in range(total_size):
-        GT_label = -1   
-        if GT[i] >= alpha:
-            GT_label = 1  # slagger
-        else:
-            GT_label = 0
-        y_true.append(GT_label)
-
         Predict_lable = -1
         if prediction_result[i] >= alpha:
             Predict_lable = 1   # slagger
@@ -405,7 +394,7 @@ def transform_ground_truth(GT, prediction_result, alpha):
             Predict_lable = 0
         y_pred.append(Predict_lable)
     
-    return y_true, y_pred
+    return y_pred
 
 def eval_nurd(GT, prediction_result, alpha):
     '''
@@ -457,22 +446,15 @@ def eval_nurd(GT, prediction_result, alpha):
 ############################
 
 class Reweight:
-    def __init__(self, batch_size, x_train, y_train, scaler):
+    def __init__(self):
         # Initialize Model
-        self.model_tree = 
-        self.model_logreg = 
-        
-        # Initialize Normalizer
-        self.scaler = scaler
-        if scaler != None:
-            self.norm = MinMaxScaler()
-        else:
-            self.norm = None
+        self.model_tree = GradientBoostingRegressor(random_state=random_state)
+        self.model_logreg = LogisticRegression(random_state=random_state, solver='lbfgs')
 
-    def train(self, x_train, y_train, save=True, scaler_path=None, model_path=None, retrain=False):
+    def train(self, x_train, y_train, save=True, modellogreg_path=None, modeltree_path=None, retrain=False):
         print("Preparing Data")
         dataset = x_train
-        dataset = dataset[dataset['io_type'] == 1].copy(deep=True).reset_index(drop=True)
+        dataset = dataset.copy(deep=True).reset_index(drop=True)
         job_rawsize = dataset.shape[0]  ## Code change: Get number of tasks in a job (Here, we treat each IO request a job (which only contians one task))
         print("size of dataset: {}".format(job_rawsize))
 
@@ -482,7 +464,7 @@ class Reweight:
         list_task_compact = []  ## list of last row
         for i in range(job_rawsize):
             task = dataset.loc[i:i, :]   # code change: we treat each IO an task within a job (and a job only contain one task)
-            task_new = task.copy(deep=True).drop(columns=["reject", "latency"], axis=1) # get the dataframe of this task (except for latency)
+            task_new = task.copy(deep=True) # .drop(columns=["latency"], axis=1) get the dataframe of this task (except for latency)
             tp_new = sum(task.copy(deep=True)["latency"])  # get the latency of this task
             list_tp.append(tp_new)
             list_task_compact.append(task_new.iloc[-1].tolist())
@@ -490,14 +472,12 @@ class Reweight:
         print("Finish appending tasks")
 
         ## Construct new non-time series data
-        np_task_compact = np.array(list_task_compact)   # collect all the tasks into one list then dataframe
-        df_task_compact = pd.DataFrame(np_task_compact, columns = flashnet_feat_col) # Code change: use the input features of flashnet
+        df_task_compact = dataset[flashnet_feat_col]
         df_task_compact['latency'] = pd.Series(np.asarray(list_tp), index=df_task_compact.index)
         df_sel = df_task_compact[task_cols]
-        latency_min = df_sel['latency'].min()
-        latency_max = df_sel['latency'].max()
-        latency_diff = latency_max - latency_min
-        job = (df_sel-df_sel.min())/(df_sel.max()-df_sel.min())   # apply min-max normalization to the jobs.
+        self.norm_min = df_sel.min()
+        self.norm_max = df_sel.max()
+        job = (df_sel-self.norm_min)/(self.norm_max-self.norm_min)   # apply min-max normalization to the jobs.
         job = job.dropna(axis='columns') 
         job_raw = job.reset_index(drop=True)
 
@@ -514,31 +494,29 @@ class Reweight:
             if ts_size < task.shape[0]:
                 ts_size = task.shape[0]
             list_task_nn.append(task)
-        print("Finish normalize each task")
 
         ## Split training and testing data
         latency = job_raw.latency.values
         ## Parameter to tune propensity score
         lat_sort = np.sort(latency)
         print("# tail :  {}".format(tail))
-
         cutoff = int(tail*latency.shape[0])
         print("# cutoff:  {}".format(cutoff))
-        alpha = lat_sort.tolist()[cutoff]    # the value at p90
-        print("# alpha:  {}".format(alpha))
+        self.alpha = lat_sort.tolist()[cutoff]    # the value at p90
+        print("# alpha:  {}".format(self.alpha))
 
         cutoff_pt = int(pt * latency.shape[0])
         alpha_pt = lat_sort.tolist()[cutoff_pt]  # the value at p4
-        train_idx_init = job.index[job['latency'] < alpha].tolist()
-        test_idx_init = job.index[job['latency'] >= alpha].tolist()
-        train_idx_removed = job.index[(job['latency'] >= alpha_pt) & (job['latency'] < alpha)].tolist()
+        train_idx_init = job.index[job['latency'] < self.alpha].tolist()
+        test_idx_init = job.index[job['latency'] >= self.alpha].tolist()
+        train_idx_removed = job.index[(job['latency'] >= alpha_pt) & (job['latency'] < self.alpha)].tolist()
         print("# true tail: {}".format(len(test_idx_init)))
 
         train_idx = list(set(train_idx_init) - set(train_idx_removed))
         test_idx = test_idx_init + train_idx_removed  ## test_idx = stra_idx + gap_idx
         print("# removed: {}".format(len(train_idx_removed)))
 
-        job =job_raw.copy() 
+        job = job_raw.copy() 
         job_train = job.iloc[train_idx]
         job_test = job.iloc[test_idx]
         job_test_stra = job.iloc[test_idx_init]
@@ -552,211 +530,179 @@ class Reweight:
         Y_train = job_train.to_numpy()[:,0]
         # X_test = job_test.to_numpy()[:,1:]
         # Y_test = job_test.to_numpy()[:,0]
-        # X_test_stra = job_test_stra.to_numpy()[:,1:]
-        # Y_test_stra = job_test_stra.to_numpy()[:,0]
-        # X_test_gap = job_test_gap.to_numpy()[:,1:]
-        # Y_test_gap = job_test_gap.to_numpy()[:,0]
+        X_test_stra = job_test_stra.to_numpy()[:,1:]
+        Y_test_stra = job_test_stra.to_numpy()[:,0]
+        X_test_gap = job_test_gap.to_numpy()[:,1:]
+        Y_test_gap = job_test_gap.to_numpy()[:,0]
 
         job.loc[train_idx_init, 'Label'] = 0
         job.loc[test_idx_init, 'Label'] = 1
-        y_test_true = job.loc[test_idx, 'Label'].values ## binary groundtruth for testing tasks
-        y_stra_true = job.loc[test_idx_init, 'latency'].values ## groundtruth for straggler
+        # y_test_true = job.loc[test_idx, 'Label'].values ## binary groundtruth for testing tasks
+        # y_stra_true = job.loc[test_idx_init, 'latency'].values ## groundtruth for straggler
 
-        ## Get latency bins, [90,95), [95, 99), [99+]
+        # Get latency bins, [90,95), [95, 99), [99+]
         cutoff95 = int(0.95 * latency.shape[0])
         alpha95 = lat_sort.tolist()[cutoff95]
         cutoff99 = int(0.99 * latency.shape[0])
         alpha99 = lat_sort.tolist()[cutoff99]
-        test95_idx = job.index[(job['latency'] >= alpha) & (job['latency'] < alpha95)].tolist()
-        test99_idx = job.index[(job['latency'] >= alpha95) & (job['latency'] < alpha99)].tolist()
-        test99p_idx = job.index[(job['latency'] >= alpha99)].tolist()
-        BI = np.cumsum([len(test95_idx), len(test99_idx), len(test99p_idx)])
-        print("# latency bins: {}".format(BI))
+        # test95_idx = job.index[(job['latency'] >= alpha) & (job['latency'] < alpha95)].tolist()
+        # test99_idx = job.index[(job['latency'] >= alpha95) & (job['latency'] < alpha99)].tolist()
+        # test99p_idx = job.index[(job['latency'] >= alpha99)].tolist()
+        # BI = np.cumsum([len(test95_idx), len(test99_idx), len(test99p_idx)])
+        # print("# latency bins: {}".format(BI))
 
         ## Padding zero rows to unify task size
-        list_task_norm = []
+        list_task_norm = list_task_nn
         test_idx_gap = [i for i in test_idx if i not in test_idx_init]
-        list_task_nn_stra = [list_task_nn[i] for i in test_idx_init]  ## only straggler tasks
-        list_task_nn_gap = [list_task_nn[i] for i in test_idx_gap] ## nonstragglers in testing
-        list_task_nn_test = [list_task_nn[i] for i in test_idx]  ## for all test tasks
+        # list_task_nn_stra = [list_task_nn[i] for i in test_idx_init]  ## only straggler tasks
+        # list_task_nn_gap = [list_task_nn[i] for i in test_idx_gap] ## nonstragglers in testing
+        # list_task_nn_test = [list_task_nn[i] for i in test_idx]  ## for all test tasks
 
         # print("list_task_nn_stra: {}".format(list_task_nn_stra))
         # print("list_task_nn_stra.shape[0]: {}".format(list_task_nn_stra.shape[0]))
-
-        ss_stra, ss_gap = [d.shape[0] for d in list_task_nn_stra], [d.shape[0] for d in list_task_nn_gap]
-        ts_init_size = np.max(ss_stra)   ## max task size/time intervals for stragglers
-        print("ts_init_size = {}".format(ts_init_size))   # Should equals to 1, since our dataset only has 1 record for each IO.
-
-        for dd in list_task_nn:
-            if dd.shape[0] < ts_init_size:
-                df2 =  pd.DataFrame(np.zeros([(ts_init_size-dd.shape[0]),dd.shape[1]]), columns=list(dd))
-                list_task_norm.append(dd.append(df2, ignore_index=True))
-            else:
-                list_task_norm.append(dd)       
-                        
+    
         ## Only care about tasks that are stragglers
         list_task_norm_stra = [list_task_norm[i] for i in test_idx_init]
         list_task_norm_gap = [list_task_norm[i] for i in test_idx_gap]
         list_task_norm_test = [list_task_norm[i] for i in test_idx]
         print(len(list_task_norm_stra),len(list_task_norm_gap),len(list_task_norm_test))
 
-        ## Process task length
-        mean_len_stra = sum([len(i) for i in list_task_nn_stra])/len(list_task_nn_stra)
-        mean_len_gap = sum([len(i) for i in list_task_nn_gap])/len(list_task_nn_gap)
-        print(mean_len_stra, mean_len_gap)
-
-        ## Remove bad true straggler
-        bad_stra_idx = []
-        for i in range(len(list_task_nn_stra)):
-            if len(list_task_nn_stra[i]) < mean_len_stra-1:
-                bad_stra_idx.append(i)
-        good_stra_idx = [i for i in range(len(list_task_nn_stra)) if i not in bad_stra_idx] 
-        list_task_final_stra = [list_task_norm_stra[i] for i in good_stra_idx]
-
-        ## Remove bad normal tasks
-        bad_gap_idx = []
-        for i in range(len(list_task_nn_gap)):
-            if len(list_task_nn_gap[i]) > mean_len_gap+1:
-                bad_gap_idx.append(i)
-        good_gap_idx = [i for i in range(len(list_task_nn_gap)) if i not in bad_gap_idx]  
-        list_task_final_gap = [list_task_norm_gap[i] for i in good_gap_idx]
+        list_task_final_stra = list_task_norm_stra
+        list_task_final_gap = list_task_norm_gap
 
         list_task_final_test = list_task_final_stra + list_task_final_gap
 
         ## Get final test data
-        X_test_stra_final = X_test_stra[good_stra_idx]
-        X_test_gap_final = X_test_gap[good_gap_idx]
+        X_test_stra_final = X_test_stra
+        X_test_gap_final = X_test_gap
         X_test_final = np.concatenate((X_test_stra_final, X_test_gap_final))
 
-        Y_test_stra_final = Y_test_stra[good_stra_idx]
-        Y_test_gap_final = Y_test_gap[good_gap_idx]
+        Y_test_stra_final = Y_test_stra
+        Y_test_gap_final = Y_test_gap
         Y_test_final = np.concatenate((Y_test_stra_final, Y_test_gap_final))
 
-        BI_95 = sum(((Y_test_stra_final>=alpha) & (Y_test_stra_final < alpha95)) * 1)
-        BI_99 = sum(((Y_test_stra_final>=alpha) & (Y_test_stra_final < alpha99)) * 1)
-        BI_99p = sum(((Y_test_stra_final>=alpha)) * 1)
+        BI_95 = sum(((Y_test_stra_final>=self.alpha) & (Y_test_stra_final < alpha95)) * 1)
+        BI_99 = sum(((Y_test_stra_final>=self.alpha) & (Y_test_stra_final < alpha99)) * 1)
+        BI_99p = sum(((Y_test_stra_final>=self.alpha)) * 1)
         BI_new = np.asarray([BI_95, BI_99, BI_99p])
 
-        num_stra, num_gap = X_test_stra_final.shape[0], X_test_gap_final.shape
-        print(X_test_stra_final.shape, X_test_gap_final.shape, X_test_final.shape)
-        print(BI_new)
+        # num_stra, num_gap = X_test_stra_final.shape[0], X_test_gap_final.shape
+        print("Final size", X_test_stra_final.shape, X_test_gap_final.shape, X_test_final.shape)
+        print("Final BI", BI_new)
 
         X_train_up, X_test_up, Y_train_up, Y_test_up = X_train, X_test_final, Y_train, Y_test_final
-        Y_train_pu = (Y_train_up<alpha)*1
+        # Y_train_pu = (Y_train_up<alpha)*1
 
-        lt_stra, lt_gap = len(list_task_final_stra), len(list_task_final_gap)  ## straggler/non-straggler size in testing
-        list_task_final_gap_down = list_task_final_gap
+        # lt_stra, lt_gap = len(list_task_final_stra), len(list_task_final_gap)  ## straggler/non-straggler size in testing
+        # list_task_final_gap_down = list_task_final_gap
         list_task_final_test_down = list_task_final_test
-        full_idx = range(len(list_task_final_test_down))
-        eps = 0.05
-        pl_gb, pl_ipwnc, pl_ipw, pl_en, pl_bg, pl_tb, pl_kt = [],[],[],[],[],[],[]
+        # full_idx = range(len(list_task_final_test_down))
+        # eps = 0.05
+        # pl_gb, pl_ipwnc, pl_ipw = [],[],[]
 
-        for k in range(0, ts_init_size):  # ts_init_size
-            
-            # retrieve all the final test records(?), and store in np_tn_nz
-            tn = [i.iloc[k].values for i in list_task_final_test_down]
-            np_tn = np.asarray(tn)    
-            np_tn_nzidx = (np.where(np_tn.any(axis=1))[0]).tolist()
-            np_tn_nz = np_tn[~np.all(np_tn == 0, axis=1)]
-            
-            cen_train = np.mean(X_train_up, axis=0)
-            cen_test = np.mean(np_tn_nz, axis=0)
-            rho = sum(cen_train**2)/sum((cen_train-cen_test)**2)
-            
-            if k == 0:   # iteration start
-                delta = 1/(1+rho) - gamma
-                print("delta: {}".format(delta))
-            
-            ## Base      
-            r_gb = GradientBoostingRegressor(random_state=random_state).fit(X_train_up, Y_train_up)   # 1. Train with finished task using GBDT
-            p_gb_curr = r_gb.predict(np_tn_nz).tolist()    # apply to the test data.
-            p_gb = [0] * len(full_idx)
-            for j in range(len(np_tn_nzidx)):
-                p_gb[np_tn_nzidx[j]] = p_gb_curr[j]
-            pl_gb.append(p_gb)        
-            
-            ## IPW-NC  (proposed NURD in the paper.) (NC stands for not including reweighting based on latency space)
-            # Apply ** reweighting **
-            zero_reweight_n = 0
-            X = np.asarray(np.concatenate((X_train_up, np_tn_nz)))
-            y = np.asarray([0] * X_train_up.shape[0] + [1] * np_tn_nz.shape[0])
-            clf = LogisticRegression(random_state=random_state, solver='lbfgs').fit(X, y)
-            ps = clf.predict_proba(X)
-            ps0 = ps[X_train_up.shape[0]:,0].copy()   # 2. Use logistic regression to estimate the propensity score.
-            p_ipwnc_curr = []
-
-            # Train Phase:
-            # 1. Train on fast I/O (p0-p20) with GradientBoostingRegressor, get prediction result on testing set in 'p_gb_curr'.
-            # 2. Since they train on fast I/O, they consider the current prediction on testing set is biased. So, need to do reweighting.
-            #    final_pred_testing = 'p_gb_curr' / reweighting
-            # 3. 'reweighting' is got by LogisticRegression() on all data(training & testing set) => 'reweighting' = 'ps0'
-            # 4. final prediction latency: 'p_ipwnc_curr' = 'p_gb_curr' / 'ps0'
-            for x, z in zip(p_gb_curr, ps0.tolist()):    # Handle the devided by 0 situation, give up reweight
-                if z == 0:
-                    zero_reweight_n += 1
-                    p_ipwnc_curr.append(x)
-                else:
-                    p_ipwnc_curr.append(x/z)    
-
-            # p_ipwnc_curr = [x/z for x, z in zip(p_gb_curr, ps0.tolist())]
-            p_ipwnc = [0] * len(full_idx)
-            for j in range(len(np_tn_nzidx)):
-                p_ipwnc[np_tn_nzidx[j]] = p_ipwnc_curr[j]    
-            pl_ipwnc.append(p_ipwnc)      
-            
-            ## IPW (proposed NURD in the paper.)
-            ps1 = ps[X_train_up.shape[0]:,0].copy()    
-            for i in range(len(ps1)):
-                ps1[i] = max(eps, min(ps1[i]+delta, 1))     # 3. with eps to do 
-                    
-            p_ipw_curr = [x/(z + 0.000001) for x, z in zip(p_gb_curr, ps1.tolist())]
-            p_ipw = [0] * len(full_idx)
-            for j in range(len(np_tn_nzidx)):
-                p_ipw[np_tn_nzidx[j]] = p_ipw_curr[j]    
-            pl_ipw.append(p_ipw)  
-
-        y_true, y_pred = transform_ground_truth(Y_test_up[np_tn_nzidx], p_ipwnc_curr, alpha)
-        
         print("Training", "."*20)
 
-        # Data normalization
-        if self.scaler != None:
-            self.norm.fit(x_train)
-            x_train = self.norm.transform(x_train)
+        # retrieve all the final test records(?), and store in np_tn_nz
+        tn = [i.iloc[0].values for i in list_task_final_test_down]
+        np_tn = np.asarray(tn)    
+        # np_tn_nzidx = (np.where(np_tn.any(axis=1))[0]).tolist()
+        np_tn_nz = np_tn[~np.all(np_tn == 0, axis=1)]
         
-        x_train_tensor = tf.data.Dataset.from_generator(
-            self.dataframe_generator,
-            output_signature=(
-                tf.TensorSpec(shape=(None, x_train.shape[1]), dtype=tf.float16),
-                tf.TensorSpec(shape=(None,), dtype=tf.bool)
-            ),
-            args=(x_train, y_train)
-        )
-
-        # Model Architecture
-        if retrain:
-            self.dnn_model = tf.keras.models.load_model(model_path)
+        cen_train = np.mean(X_train_up, axis=0)
+        cen_test = np.mean(np_tn_nz, axis=0)
+        rho = sum(cen_train**2)/sum((cen_train-cen_test)**2)
         
-        # Train the model
-        callback = tf.keras.callbacks.EarlyStopping(monitor='loss', patience=3, min_delta=0.01)
-        self.dnn_model.fit(
-            x_train_tensor,
-            batch_size=self.batch_size,
-            verbose=0, epochs=20,
-            callbacks=[callback]
-        )
+        self.delta = 1/(1+rho) - gamma
+        print("delta: {}".format(self.delta))
+        
+        ## Base      
+        self.model_tree = self.model_tree.fit(X_train_up, Y_train_up)   # 1. Train with finished task using GBDT
+        # p_gb_curr = self.model_tree.predict(np_tn_nz).tolist()    # apply to the test data.
+        # p_gb = [0] * len(full_idx)
+        # for j in range(len(np_tn_nzidx)):
+        #     p_gb[np_tn_nzidx[j]] = p_gb_curr[j]
+        # pl_gb.append(p_gb)        
+        
+        ## IPW-NC  (proposed NURD in the paper.) (NC stands for not including reweighting based on latency space)
+        # Apply ** reweighting **
+        # zero_reweight_n = 0
+        X = np.asarray(np.concatenate((X_train_up, np_tn_nz)))
+        y = np.asarray([0] * X_train_up.shape[0] + [1] * np_tn_nz.shape[0])
+        self.model_logreg = self.model_logreg.fit(X, y)
+        # ps = self.model_logreg.predict_proba(X)
+        # ps0 = ps[X_train_up.shape[0]:,0].copy()   # 2. Use logistic regression to estimate the propensity score.
+        # p_ipwnc_curr = []
 
+        # # Train Phase:
+        # # 1. Train on fast I/O (p0-p20) with GradientBoostingRegressor, get prediction result on testing set in 'p_gb_curr'.
+        # # 2. Since they train on fast I/O, they consider the current prediction on testing set is biased. So, need to do reweighting.
+        # #    final_pred_testing = 'p_gb_curr' / reweighting
+        # # 3. 'reweighting' is got by LogisticRegression() on all data(training & testing set) => 'reweighting' = 'ps0'
+        # # 4. final prediction latency: 'p_ipwnc_curr' = 'p_gb_curr' / 'ps0'
+        # for x, z in zip(p_gb_curr, ps0.tolist()):    # Handle the devided by 0 situation, give up reweight
+        #     if z == 0:
+        #         zero_reweight_n += 1
+        #         p_ipwnc_curr.append(x)
+        #     else:
+        #         p_ipwnc_curr.append(x/z)    
+
+        # # p_ipwnc_curr = [x/z for x, z in zip(p_gb_curr, ps0.tolist())]
+        # p_ipwnc = [0] * len(full_idx)
+        # for j in range(len(np_tn_nzidx)):
+        #     p_ipwnc[np_tn_nzidx[j]] = p_ipwnc_curr[j]    
+        # pl_ipwnc.append(p_ipwnc)      
+        
+        # ## IPW (proposed NURD in the paper.)
+        # ps1 = ps[X_train_up.shape[0]:,0].copy()    
+        # for i in range(len(ps1)):
+        #     ps1[i] = max(eps, min(ps1[i]+self.delta, 1))     # 3. with eps to do 
+                
+        # p_ipw_curr = [x/(z + 0.000001) for x, z in zip(p_gb_curr, ps1.tolist())]
+        # p_ipw = [0] * len(full_idx)
+        # for j in range(len(np_tn_nzidx)):
+        #     p_ipw[np_tn_nzidx[j]] = p_ipw_curr[j]    
+        # pl_ipw.append(p_ipw)  
+
+        # y_true, y_pred = transform_ground_truth(Y_test_up[np_tn_nzidx], p_ipwnc_curr, self.alpha)
+        
         if save:
-            self.dnn_model.save(model_path)
-            if self.scaler != None:
-                joblib.dump(self.norm, scaler_path)
+            joblib.dump(self.model_tree, modeltree_path)
+            joblib.dump(self.model_logreg, modellogreg_path)
 
         print("Done Training", "."*20)
 
-        # return self.norm, self.dnn_model
-
     def pred(self, x_test):
-        if self.scaler != None:
-            x_test = self.norm.transform(x_test)
-        x_test_tensor = tf.convert_to_tensor(x_test)
-        return (self.dnn_model.predict(x_test_tensor, verbose=0) > 0.5).flatten()
+        # print("x_test", len(x_test))
+        if len(x_test) > 0:
+            x_test = x_test[flashnet_feat_col]
+            x_test.reset_index(drop=True, inplace=True)
+            x_test = (x_test-self.norm_min)/(self.norm_max-self.norm_min)
+            x_test = x_test.to_numpy()[:,1:]
+            # print("transform", x_test[0])
+            p_gb = self.model_tree.predict(x_test).tolist()    # apply to the test data.
+            # print("p_gb", p_gb[:5])
+            
+            ## IPW-NC  (proposed NURD in the paper.) (NC stands for not including reweighting based on latency space)
+            # Apply ** reweighting **
+            ps = self.model_logreg.predict_proba(x_test)
+            ps0 = ps[:,0].copy()
+            # print("ps", ps[:5])
+            # print("ps0", ps0[:5])
+
+            eps = 0.05
+            ## IPW (proposed NURD in the paper.)
+            ps_test = []
+            for i in range(len(x_test)):
+                ps_test.append(max(eps, min(ps0[i]+self.delta, 1)))     # 3. with eps to do 
+            # print("ps_test", ps_test[:5])
+
+            p_ipwnc = [x/(z + 0.000001) for x, z in zip(p_gb, ps_test)]
+            # print("ipwnc", p_ipwnc[:5])
+
+            y_pred = transform_ground_truth(p_ipwnc, self.alpha)
+            # print("pred", y_pred[:5])
+        
+        else:
+            y_pred = []
+
+        return y_pred

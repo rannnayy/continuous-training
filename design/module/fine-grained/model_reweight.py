@@ -8,32 +8,19 @@ import os
 import numpy as np
 import time
 import tensorflow as tf
-import joblib
-import shutil
 # import sklearnex
 # patch_sklearn()
+import resource
+import psutil
+from timeit import default_timer
 
 tf.config.set_visible_devices([], 'GPU')
 
 from model.classification.nn import NN as NeuralNetworkClf
 from model.classification.randforest import RandomForest as RandomForestClf
 from model.regression.nn import NN as NeuralNetworkReg
+from model.regression.nurd import Reweight
 # from model.regression.randforest import RandomForest as RandomForestReg
-
-from drift_detector.Algo0IP import dd_ip as IPBased
-from drift_detector.Algo1HeuristicsOutlier import dd_lat_slope as HeuristicsBasedOutlier
-from drift_detector.Algo2HeuristicsQuartile import dd_lat_slope as HeuristicsBasedQuartile
-from drift_detector.Algo3Heuristics import dd_heuristics as HeuristicsBasedLabeler
-from drift_detector.Algo4KSTest import dd_ks_test as KolmogorovSmirnovTest
-from drift_detector.Algo5PageHinkley import dd_page_hinkley as PageHinkleyTest
-from drift_detector.Algo6PopulationStabilityIndex import dd_psi as PopulationStabilityIndex
-from drift_detector.Algo7KullbackLeibler import dd_kl as KullbackLeiblerTest
-from drift_detector.Algo8JensenShannon import dd_js as JensenShannonDistance
-from drift_detector.Algo9ModelCluster import dd_cluster_kmeans as ModelCluster
-from drift_detector.Algo10ModelClf import dd_model as ModelClf
-# from drift_detector import Algo11ModelAutoencoder as ModelAutoencoder
-# from drift_detector import Algo12ModelTree as ModelTree
-# from drift_detector import Algo13ModelRNN as ModelRNN
 
 DATA_TRAIN_DURATION_MIN = 5
 DATA_RETRAIN_DURATION_MIN = 5
@@ -41,6 +28,16 @@ DATA_EVAL_DURATION_MIN = 1
 DATA_MONITOR_PERIOD_MIN = 1
 DATA_MONITOR_DURATION_MIN = 1
 BATCH_SIZE = 256
+
+# For Overhead Evaluation
+EVAL_TIME = 0
+EVAL_MEMORY_USAGE = 0
+EVAL_CPU_TIME = 0
+EVAL_COUNTER = 0
+TRAIN_TIME = 0
+TRAIN_MEMORY_USAGE = 0
+TRAIN_CPU_TIME = 0
+TRAIN_COUNTER = 0
 
 def create_output_dir(output_path):
     if not os.path.exists(output_path):
@@ -93,6 +90,7 @@ if __name__ == '__main__':
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output)
     output_vars = os.path.join(output_dir, 'parameters.txt')
+    output_drift_data = os.path.join(output_dir, 'drift_data.csv')
     create_output_dir(output_dir)
 
     # Regarding file
@@ -118,46 +116,12 @@ if __name__ == '__main__':
     output_cycle = os.path.join(output_dir, 'train')
     create_output_dir(output_cycle)
 
-    i = 1
-    index_data_train = 0
-    while index_data_train == 0:
-        print("="*20, i, "="*20)
-        dataset_path = os.path.join(path, prefix + "_" + str(i), dataset_name)
-        print("Dataset Path =>", dataset_path)
-
-        dataset_new = pd.read_csv(dataset_path)
-        if i > 1:
-            dataset = pd.concat([dataset, dataset_new], ignore_index=True)
-        else:
-            dataset = dataset_new.copy(deep=True)
-        dataset_new = None
-        dataset.reset_index(inplace=True, drop=True)
-        print(dataset.shape)
-
-        index_data_train = (dataset['ts_record'] >= (data_train_duration_ms)).idxmax()
-        i += 1
-    
-    print("Taking", i * data_train_duration_ms)
-    print("Number of data for train", index_data_train)
-    dataset_train = dataset[:index_data_train]
-    dataset = dataset[index_data_train:]
-    x = dataset_train.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-    y = dataset_train["reject"].copy(deep=True)
-
-    # Train if model doesn't exist
-    # Specific output directory
-    model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
-    model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), False)
-    print("train", len(y))
-
-    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
-    y_pred = model_instance.pred(x_test)
-    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, [1 if y == True else 0 for y in y_pred])
-    stats_df.loc[len(stats_df)] = ['train', -1, 0, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
-
     curr_ts = data_train_duration_ms
-    old_i = i
-    for i in range(old_i, old_i+int(args.eval_period*12)):
+    eval_mode = False
+    index_data_train = 0
+    index_data_1min = 0
+    print(1, int(args.eval_period*12)+1)
+    for i in range(1, int(args.eval_period*12)+1):
         print("="*20, i, "="*20)
         dataset_path = os.path.join(path, prefix + "_" + str(i), dataset_name)
         print("Dataset Path =>", dataset_path)
@@ -170,74 +134,76 @@ if __name__ == '__main__':
         dataset_new = None
         dataset.reset_index(inplace=True, drop=True)
 
-        # One chunk has 5 mins of data
-        for j in range(1, 6):
-            print("*"*20)
-            curr_ts += data_eval_duration_ms
-            index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * data_eval_duration_ms).idxmax()
+        if not eval_mode:
+            # Train Mode
+            if (dataset['ts_record'] >= (data_train_duration_ms)).idxmax() > 0:
+                index_data_train = (dataset['ts_record'] >= (data_train_duration_ms)).idxmax()
+                print("Taking", i * data_train_duration_ms)
+                print("Number of data for train", index_data_train)
+                dataset_train = dataset[:index_data_train]
+                dataset = dataset[index_data_train:]
+                x = dataset_train.copy(deep=True).drop(columns=["ts_record", "reject"], axis=1)
+                y = dataset_train["reject"].copy(deep=True)
 
-            print("Taking", ((i-1)*5 + j) * data_eval_duration_ms)
-            print("Number of data for #", ((i-1)*5) + j, "eval", index_data_1min)
-            dataset_1min = dataset[:index_data_1min]
-            dataset = dataset[index_data_1min:]
-            dataset.reset_index(drop=True, inplace=True)
-            # print(dataset_1min['ts_record'].head().tolist())
-            # print(dataset_1min['ts_record'].tail().tolist())
-            # print(dataset_1min.shape)
+                # Get training throughput data for DD model dataset
+                # initial_thpt = dataset_train['size']/dataset_train['latency']
+                # summary_initial_thpt = np.array([int(np.percentile(initial_thpt, x)) for x in range(0, 101, 10)])
+                
+                # Train if model doesn't exist
+                # if not (os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib')) and os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))):
+                # Specific output directory
+                start_time = default_timer()
+                train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
+                cpu_times = psutil.cpu_times()
+                model_instance = Reweight()
+                model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_logreg.joblib'), os.path.join(output_cycle, args.model_name + '_tree.joblib'), False)
+                TRAIN_TIME += default_timer()-start_time
+                TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
+                TRAIN_CPU_TIME += psutil.cpu_times().user-cpu_times.user
+                TRAIN_COUNTER += 1
+                print("train", len(y))
+                # else:
+                #     print("Just copy...")
+                #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + '_norm.joblib'))
+                #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
+                #     model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
+                #     model_instance.dnn_model = tf.keras.models.load_model(os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
+                #     model_instance.norm = joblib.load(os.path.join(output_cycle, args.model_name + '_norm.joblib'))
+                
+                x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
+                y_pred = model_instance.pred(x_test)
+                roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred)
+                stats_df.loc[len(stats_df)] = ['train', -1, 0, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
 
-            # Prepare evaluation data
-            x = dataset_1min.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-            y = dataset_1min["reject"].copy(deep=True)
-            print("eval", i, j, len(y))
+                eval_mode = True
 
-            # Evaluation
-            y_pred = model_instance.pred(x)
-            roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
-            stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
-        
-            # Save dataset for future retraining (only eligible if data_retrain_duration_min mins of data passed)
-            if not args.no_retrain: # If do retraining
-                if len(num_rows) == data_retrain_duration_min:
-                    num_to_remove = num_rows.pop(0)
-                    pending_training_data = pending_training_data[num_to_remove:]
-                if len(num_rows) == 0:
-                    pending_training_data = dataset_1min.copy(deep=True)
-                else:
-                    pending_training_data = pd.concat([pending_training_data, dataset_1min], ignore_index=True)
-                num_rows.append(len(y_pred))
+        if eval_mode:
+            # Eval Mode
+            # One chunk has 5 mins of data
+            for j in range(1, 6):
+                print("*"*20)
+                curr_ts += data_eval_duration_ms
+                index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * data_eval_duration_ms).idxmax()
 
-                # Dataset Generation for models
-                current_thpt = pending_training_data['size']/pending_training_data['latency']
-                summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
-                if args.dd_algo == 'heuristics-based-labeler':
-                    current_lat = pending_training_data['latency']
+                print("Taking", ((i-1)*5 + j) * data_eval_duration_ms)
+                print("Number of data for #", ((i-1)*5) + j, "eval", index_data_1min)
+                dataset_1min = dataset[:index_data_1min]
+                dataset = dataset[index_data_1min:]
+                dataset.reset_index(drop=True, inplace=True)
+                # print(dataset_1min['ts_record'].head().tolist())
+                # print(dataset_1min['ts_record'].tail().tolist())
+                # print(dataset_1min.shape)
 
-                # Retraining
-                if args.dd_algo == 'heuristics-based-labeler':
-                    do_retrain = monitor(initial_lat, initial_thpt, args.dd_algo, [current_lat, current_thpt])
-                else:
-                    do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo)
-                if do_retrain:
-                    x = pending_training_data.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-                    y = pending_training_data["reject"].copy(deep=True)
-                    # Specific output directory
-                    output_cycle = os.path.join(output_dir, 'train')
-                    create_output_dir(output_cycle)
-                    model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), True)
+                # Prepare evaluation data
+                x = dataset_1min.copy(deep=True).drop(columns=["ts_record", "reject"], axis=1)
+                y = dataset_1min["reject"].copy(deep=True)
+                print("eval", i, j, len(y))
 
-                    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
-                    y_pred = model_instance.pred(x_test)
-                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred)
-                    
-                    stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, do_retrain]
-
-                # Calculate difference of throughput percentiles
-                difference_thpt_per_percentile = [abs(i-c) for i, c in zip(summary_initial_thpt, summary_current_thpt)]
-                # The label
-                difference_thpt_per_percentile.append(do_retrain)
-                difference_thpt_per_percentile.append(f1)
-                # Log drift data
-                drift_data.loc[len(drift_data)] = difference_thpt_per_percentile
+                # Evaluation
+                if len(x) > 0:
+                    y_pred = model_instance.pred(x)
+                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
+                    stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
                 
     stats_df.to_csv(output_stats)
     print("Output file =>", output_stats)
@@ -246,15 +212,14 @@ if __name__ == '__main__':
     print("Output drift data =>", output_drift_data)
 
     params = []
-    params.append("-path ="+str(path))
-    params.append("-dataset_name ="+str(dataset_name))
-    params.append("-data_train_duration_min ="+str(data_train_duration_min))
-    params.append("-data_retrain_duration_min ="+str(data_retrain_duration_min))
-    params.append("-data_eval_duration_min ="+str(data_eval_duration_min))
-    params.append("-roc_auc_threshold ="+str(roc_auc_threshold))
-    params.append("-batch_size ="+str(batch_size))
-    params.append("-no_retrain ="+str(args.no_retrain))
-    params.append("-model_algo ="+str(model_algo))
-    params.append("-output ="+str(args.output))
-    params.append(" =====> Output ="+str(output_dir))
+    params.append("-path = "+str(path))
+    params.append("-dataset_name = "+str(dataset_name))
+    params.append("-data_train_duration_min = "+str(data_train_duration_min))
+    params.append("-data_retrain_duration_min = "+str(data_retrain_duration_min))
+    params.append("-data_eval_duration_min = "+str(data_eval_duration_min))
+    params.append("-output = "+str(args.output))
+    params.append("-eval_period = "+str(args.eval_period))
+    params.append("-model_name = "+str(args.model_name))
+    params.append("-output = "+str(args.output))
+    params.append(" =====> Output = "+str(output_dir))
     write_stats(output_vars, '\n'.join(params))
