@@ -4,6 +4,7 @@ import argparse
 import pandas as pd
 from sklearn.metrics import roc_auc_score, accuracy_score, average_precision_score, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
 import os
 import numpy as np
 import time
@@ -20,6 +21,7 @@ from model.classification.nn import NN as NeuralNetworkClf
 from model.classification.randforest import RandomForest as RandomForestClf
 from model.regression.nn import NN as NeuralNetworkReg
 # from model.regression.randforest import RandomForest as RandomForestReg
+from model.classification.decisiontree import DecisionTree
 
 DATA_TRAIN_DURATION_MIN = 5
 DATA_RETRAIN_DURATION_MIN = 5
@@ -48,22 +50,6 @@ def write_stats(filePath, statistics):
         text_file.write(statistics)
     print("===== output file : " + filePath)
 
-def time_dd(time, now_time):
-    if now_time % time == 0:
-        return True
-    return False
-
-def monitor(y_then, y_now, dd_algo, extra_params=[]):
-    if 'time' in dd_algo:
-        return time_dd(int(dd_algo.split('time_')[1].split('min')[0]), extra_params[0])
-    if dd_algo not in ['heuristics-based-labeler', 'model-cluster', 'model-networks']:
-        return drift_detectors[dd_algo](y_then, y_now)
-    else:
-        if dd_algo == 'heuristics-based-labeler':
-            return drift_detectors[dd_algo](y_then, y_now, extra_params[0], extra_params[1])
-        else:
-            return drift_detectors[dd_algo](y_then, y_now, extra_params[0])
-
 def eval(y_test, y_pred):
     cm = confusion_matrix(y_test, y_pred)
     cm_values = [0 for i in range(4)]
@@ -75,11 +61,97 @@ def eval(y_test, y_pred):
     TN, FP, FN, TP = cm_values[0], cm_values[1], cm_values[2], cm_values[3]
     return roc_auc_score(y_test, y_pred), average_precision_score(y_test, y_pred), f1_score(y_test, y_pred), accuracy_score(y_test, y_pred), FP/(FP+TN+0.1), FN/(TP+FN+0.1)
 
+S = {}
+N = {}
+
+class MatchMaker:
+    def __init__(self):
+        self.model = RandomForestClassifier()
+
+    def train(self, x_train, y_train):
+        self.model.fit(x_train, y_train)
+    
+    def get_decision_path(self, tree, x):
+        path_matrix = tree.decision_path(x)
+        path_keys = []
+        for i in range(len(x)):
+            node_index = path_matrix.indices[path_matrix.indptr[i] : path_matrix.indptr[i + 1]]
+            path_keys.append('_'.join(node_index))
+        return path_keys
+    
+    def generate(self, x, batch_index):
+        # batch_index = [(start:end), (start:end)]
+        global S, N
+        S = {}
+        for tree_id, tree in enumerate(self.model.estimators_):
+            N = {}
+            for batch_id, batch in enumerate(batch_index):
+                if batch[1] > batch[0]:
+                    data = x[batch[batch_id][0]:batch[batch_id][1]]
+                    keys_decision_paths = self.get_decision_path(tree, data)
+                    for key in keys_decision_paths:
+                        if key not in N.keys():
+                            N[key] = {}
+                        if batch_id not in N[key].keys():
+                            N[key][batch_id] = 0
+                        N[key][batch_id] += 1 # fill in N[k][t] where k = node, t = batch ID
+            S[tree_id] = {}
+            for key in N.keys():
+                S[tree_id][key] = {}
+                for batch_id in N[key].keys():
+                    S[tree_id][key][batch_id] = sum([1 if (batch_id != batch_apostrophe and N[key][batch_id] > N[key][batch_apostrophe]) else 0 for batch_apostrophe in N[key].keys()])
+
+    def borda_count(self, rcs, rcd):
+        # rcs and rcd in form of dictionary
+        # sort by dictionary value and get the key
+        # in descending order
+        sorted_rcs_dict = {k: v for k, v in sorted(rcs.items(), key=lambda item: item[1], reverse=True)}
+        sorted_rcd_dict = {k: v for k, v in sorted(rcd.items(), key=lambda item: item[1], reverse=True)}
+        sorted_rcs = sorted_rcs_dict.keys()
+        sorted_rcd = sorted_rcd_dict.keys()
+        # count the borda scores for each unique element in rcs and rcd (the unique elements are same,
+        # which is the batch ID)
+        # Formula: len(list)-list.index(item)-1
+        # r_star[batch_id] = Formula(rcs) + Formula(rcd)
+        r_star = []
+        for batch_id in range(len(sorted_rcs)):
+            r_star.append((len(sorted_rcs) - sorted_rcs.index(batch_id) - 1) + (len(sorted_rcd) - sorted_rcd.index(batch_id) - 1))
+        return r_star # not sorted
+    
+    def inference(self, x_sample, batch_index, rcd):
+        global S
+        vote_batch_chosen = {}
+        for id_sample, x in enumerate(x_sample):
+            sit = []
+            for tree_id, tree in enumerate(self.model.estimators_):
+                key = self.get_decision_path(tree, x)
+                ki = []
+                for batch_id, batch in enumerate(batch_index):
+                    if batch_id not in N[key].keys():
+                        ki.append(0)
+                    else:
+                        ki.append(S[tree_id][key][batch_id])
+                sit.append(ki)
+            rcs = {}
+            for batch_id, batch in enumerate(batch_index):
+                rcs[batch_id] = sum([sit[tree_id][batch_id] for tree_id in range(len(self.model.estimators_))])
+            final_ranking = self.borda_count(rcs, rcd)
+            chosen_batch = final_ranking.index(max(final_ranking)) # get the max value from borda count
+            if chosen_batch not in vote_batch_chosen.keys():
+                vote_batch_chosen[chosen_batch] = 1
+            else:
+                vote_batch_chosen[chosen_batch] += 1
+        most_voted_sorted = {k: v for k, v in sorted(vote_batch_chosen.items(), key=lambda item: item[1], reverse=True)}
+        most_voted_chosen = most_voted_sorted.keys()[0]
+
+        return most_voted_chosen
+
 models = {
     'nn_reg': NeuralNetworkReg,
     'nn_clf': NeuralNetworkClf,
     # 'rf_reg': RandomForestReg,
-    'rf_clf': RandomForestClf
+    'rf_clf': RandomForestClf,
+    'dt_clf': DecisionTree,
 }
 
 if __name__ == '__main__':
@@ -90,31 +162,25 @@ if __name__ == '__main__':
     parser.add_argument("-data_retrain_duration_min", help="Data duration used for retraining (If not set, the window will be set equal to data_train_duration_min)", type=int, default=DATA_RETRAIN_DURATION_MIN)
     parser.add_argument("-data_eval_duration_min", help="Data duration used for each evaluation", type=int, default=DATA_EVAL_DURATION_MIN)
     parser.add_argument("-eval_period", help="Period of data for evaluation (hour)", type=float, default=1)
-    parser.add_argument("-roc_auc_threshold", help="ROC-AUC threshold for retraining (if using simple retraining condition, not specifying -model_algo)", type=float)
+    parser.add_argument("-train_period", help="Period of data for training (hour)", type=float, default=0.5)
     parser.add_argument("-batch_size", help="Training batch size", type=int, default=BATCH_SIZE)
     parser.add_argument("-no_retrain", help="Add flag if no retraining is needed", action="store_true", default=False)
-    parser.add_argument("-oracle", help="Add flag if using oracle mode", action="store_true", default=False)
-    parser.add_argument("-model_algo", help="Machine Learning algorithm to use", choices=['nn_reg', 'nn_clf', 'rf_reg', 'rf_clf'], type=str, required=True)
+    parser.add_argument("-model_algo", help="Machine Learning algorithm to use", choices=['nn_reg', 'nn_clf', 'rf_reg', 'rf_clf', 'dt_clf'], type=str, required=True)
     parser.add_argument("-model_name", help="Model's name upon saving", type=str, required=True)
-    parser.add_argument("-dd_algo", help="Drift detection algorithm to use", type=str, default='')
     parser.add_argument("-output", help="Output CSV file name upon saving", type=str, required=True)
     args = parser.parse_args()
     
-    if (not args.no_retrain and args.dd_algo == ''):
-        print('Retrain has to choose the DD algo!')
-        exit()
-
     path = args.path
     dataset_name = args.dataset_name
     data_train_duration_min = args.data_train_duration_min
     data_retrain_duration_min = args.data_retrain_duration_min
     data_eval_duration_min = args.data_eval_duration_min
-    roc_auc_threshold = args.roc_auc_threshold
     batch_size = args.batch_size
     model_algo = args.model_algo
 
     # Prepare Output Directory
     timestamp = int(time.time_ns())
+    timestamp = "model_zoo_try"
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output+'.csv')
     output_vars = os.path.join(output_dir, 'parameters.txt')
@@ -142,22 +208,31 @@ if __name__ == '__main__':
     num_rows = []
     stats_df = pd.DataFrame(columns=['mode', 'minute', 'us', 'roc_auc', 'pr_auc', 'f1_score', 'accuracy', 'fnr', 'fpr', 'retrain'])
     drift_data = pd.DataFrame(columns=['p0', 'p10', 'p20', 'p30', 'p40', 'p50', 'p60', 'p70', 'p80', 'p90', 'p100', 'drift', 'f1'])
-
+    
     output_cycle = os.path.join(output_dir, 'train')
     create_output_dir(output_cycle)
 
     # Logging
     params = []
-    if args.oracle:
-        models = []
+    list_of_models = []
 
     # Start Training and Evaluating
     curr_ts = data_train_duration_ms
-    count_retrain = 0
-    eval_mode = False
     index_data_train = 0
     index_data_1min = 0
+    old_index_data_1min = 0
+    eval_mode = False
+    rcd = [] # concept drift
+    batch_index = []
+    count_retrain = 0
+
+    # Init RF model
+    RF = MatchMaker()
+
     print(1, int(args.eval_period*12)+1)
+
+    # 1 batch = 1 minute
+
     for i in range(1, int(args.eval_period*12)+1):
         print("="*20, i, "="*20)
         dataset_path = os.path.join(path, prefix + "_" + str(i), dataset_name)
@@ -171,82 +246,74 @@ if __name__ == '__main__':
         dataset_new = None
         dataset.reset_index(inplace=True, drop=True)
 
-        if not eval_mode:
-            # Train Mode
-            if (dataset['ts_record'] >= (data_train_duration_ms)).idxmax() > 0:
-                index_data_train = (dataset['ts_record'] >= (data_train_duration_ms)).idxmax()
-                print("Taking", i * data_train_duration_ms)
-                print("Number of data for train", index_data_train)
-                dataset_train = dataset[:index_data_train]
-                dataset = dataset[index_data_train:]
-                x = dataset_train.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-                y = dataset_train["reject"].copy(deep=True)
+        # Eval Mode
+        # One chunk has 5 mins of data
+        for j in range(1, 6):
+            print("*"*20, j)
+            curr_ts += data_eval_duration_ms
+            index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * data_eval_duration_ms).idxmax()
 
-                # Get training throughput data for DD model dataset
-                initial_thpt = dataset_train['size']/dataset_train['latency']
-                summary_initial_thpt = np.array([int(np.percentile(initial_thpt, x)) for x in range(0, 101, 10)])
-                if args.dd_algo == 'heuristics-based-labeler':
-                    initial_lat = dataset_train['latency']
-                
-                # Train if model doesn't exist
-                # if not (os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib')) and os.path.isfile(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))):
-                # Specific output directory
-                start_time = default_timer()
-                train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
-                cpu_times = psutil.cpu_times()
-                model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
-                model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_0_norm.joblib'), os.path.join(output_cycle, args.model_name + ('_0.keras' if 'nn_' in model_algo else '_0.joblib')), False)
-                TRAIN_TIME += default_timer()-start_time
-                TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
-                TRAIN_CPU_TIME += psutil.cpu_times().user-cpu_times.user
-                TRAIN_COUNTER += 1
-                print("train", len(y))
-                # else:
-                #     print("Just copy...")
-                #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + '_norm.joblib'), os.path.join(output_cycle, args.model_name + '_norm.joblib'))
-                #     shutil.copy(os.path.join(os.path.dirname(output_dir), args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')), os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
-                #     model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
-                #     model_instance.dnn_model = tf.keras.models.load_model(os.path.join(output_cycle, args.model_name + ('.keras' if 'nn_' in model_algo else '.joblib')))
-                #     model_instance.norm = joblib.load(os.path.join(output_cycle, args.model_name + '_norm.joblib'))
-                
-                if args.oracle:
-                    models.append(model_instance)
+            if index_data_1min > old_index_data_1min:
 
-                x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
-                y_pred = model_instance.pred(x_test)
-                roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, [1 if y == True else 0 for y in y_pred])
-                stats_df.loc[len(stats_df)] = ['train', -1, 0, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
+                print("Taking", ((i-1)*5 + j) * data_eval_duration_ms)
+                print("Number of data for #", ((i-1)*5) + j, "eval", index_data_1min)
+                dataset_1min = dataset[old_index_data_1min:index_data_1min]
+                # dataset = dataset[index_data_1min:]
+                # dataset.reset_index(drop=True, inplace=True)
 
-                eval_mode = True
+                # Prepare evaluation data
+                x = dataset_1min.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
+                y = dataset_1min["reject"].copy(deep=True)
+                print("eval", i, j, len(y))
 
-        if eval_mode:
-            # Eval Mode
-            # One chunk has 5 mins of data
-            for j in range(1, 6):
-                print("*"*20, j)
-                curr_ts += data_eval_duration_ms
-                index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * data_eval_duration_ms).idxmax()
+                # Training Period
+                if i <= args.train_period * 12:
+                    batch_index.append((old_index_data_1min, index_data_1min))
 
-                if index_data_1min > 0:
+                    # Get training throughput data for DD model dataset
+                    initial_thpt = dataset_1min['size']/dataset_1min['latency']
+                    summary_initial_thpt = np.array([int(np.percentile(initial_thpt, x)) for x in range(0, 101, 10)])
+                    
+                    # Train
+                    start_time = default_timer()
+                    train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
+                    cpu_times = psutil.cpu_times()
+                    model_instance = models[model_algo](batch_size, x, y)
+                    model_instance.train(x, y, True, None, os.path.join(output_cycle, args.model_name + ('_' + str((i-1)*5 + j) + '.keras' if 'nn_' in model_algo else '_' + str((i-1)*5 + j) + '.joblib')), False)
+                    TRAIN_TIME += default_timer()-start_time
+                    TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
+                    TRAIN_CPU_TIME += psutil.cpu_times().user-cpu_times.user
+                    TRAIN_COUNTER += 1
+                    print("train", len(y))
+                    
+                    list_of_models.append(model_instance)
 
-                    print("Taking", ((i-1)*5 + j) * data_eval_duration_ms)
-                    print("Number of data for #", ((i-1)*5) + j, "eval", index_data_1min)
-                    dataset_1min = dataset[:index_data_1min]
-                    dataset = dataset[index_data_1min:]
-                    dataset.reset_index(drop=True, inplace=True)
-                    # print(dataset_1min['ts_record'].head().tolist())
-                    # print(dataset_1min['ts_record'].tail().tolist())
-                    # print(dataset_1min.shape)
+                    miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x, y)])
+                    rcd.append(1-(miu_val/len(y)))
 
-                    # Prepare evaluation data
-                    x = dataset_1min.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-                    y = dataset_1min["reject"].copy(deep=True)
-                    print("eval", i, j, len(y))
+                    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
+                    y_pred = model_instance.pred(x_test)
+                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred)
+                    stats_df.loc[len(stats_df)] = ['train_' + str((i-1)*5 + j), -1, 0, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
 
+                    if i == args.train_period * 12 and j == 5:
+                        # Train RF model
+                        # Prepare whole batch data
+                        x = dataset.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
+                        y = dataset["reject"].copy(deep=True)
+                        print("train whole batch", i, j, len(y))
+
+                        RF.train(x, y)
+                        RF.generate(x, batch_index)
+
+                else:
                     # Evaluation
                     start_eval_time = default_timer()
                     eval_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
                     cpu_eval_times = psutil.cpu_times()
+                    # Get sample to know which model batch to use
+                    model_index = RF.inference(x[:10], batch_index, {rcd_index:rcd[rcd_index] for rcd_index in range(len(rcd))})
+                    model_instance = list_of_models[model_index]
                     y_pred = model_instance.pred(x)
                     EVAL_TIME += default_timer()-start_eval_time
                     EVAL_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - eval_mem)
@@ -255,97 +322,20 @@ if __name__ == '__main__':
 
                     roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
                     stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
-                    if args.oracle:
-                        for model_id, model in enumerate(models):
-                            y_pred = model.pred(x)
-                            roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
-                            stats_df.loc[len(stats_df)] = ['test_'+str(model_id), ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]        
-
-                    # Save dataset for future retraining (only eligible if data_retrain_duration_min mins of data passed)
-                    if not args.no_retrain: # If do retraining
-                        if len(num_rows) == data_retrain_duration_min:
-                            num_to_remove = num_rows.pop(0)
-                            pending_training_data = pending_training_data[num_to_remove:]
-                        if len(num_rows) == 0:
-                            pending_training_data = dataset_1min.copy(deep=True)
-                        else:
-                            pending_training_data = pd.concat([pending_training_data, dataset_1min], ignore_index=True)
-                        num_rows.append(len(y_pred))
-
-                        # Dataset Generation for models
-                        current_thpt = pending_training_data['size']/pending_training_data['latency']
-                        summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
-                        if args.dd_algo == 'heuristics-based-labeler':
-                            current_lat = pending_training_data['latency']
-
-                        # Retraining
-                        if args.oracle:
-                            do_retrain = True
-                        else:
-                            if args.dd_algo == 'heuristics-based-labeler':
-                                do_retrain = monitor(initial_lat, initial_thpt, args.dd_algo, [current_lat, current_thpt])
-                            elif 'time' in args.dd_algo:
-                                do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo, [((i-1)*5) + j])
-                            else:
-                                do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo)
-                        if do_retrain:
-                            x = pending_training_data.copy(deep=True).drop(columns=["ts_record", "reject", "latency"], axis=1)
-                            y = pending_training_data["reject"].copy(deep=True)
-                            # Specific output directory
-                            count_retrain += 1
-                            start_time = default_timer()
-                            train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
-                            cpu_times = psutil.cpu_times()
-                            model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_'+str(count_retrain) + '_norm.joblib'), os.path.join(output_cycle, args.model_name + (('_'+str(count_retrain) + '.keras') if 'nn_' in model_algo else ('_'+str(count_retrain) + '.joblib'))), True if not args.oracle else False)
-                            TRAIN_TIME += default_timer()-start_time
-                            TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
-                            TRAIN_CPU_TIME += psutil.cpu_times().user-cpu_times.user
-                            TRAIN_COUNTER += 1
-                            
-                            if args.oracle:
-                                models.append(model_instance)
-                            
-                            x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
-                            y_pred = model_instance.pred(x_test)
-                            roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred)
-                            
-                            stats_df.loc[len(stats_df)] = ['validation_'+str(count_retrain), ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, do_retrain]
-
-                            # Update the data
-                            initial_thpt = current_thpt
-                            summary_initial_thpt = summary_current_thpt
-                            if args.dd_algo == 'heuristics-based-labeler':
-                                initial_lat = current_lat
-
-                        # Calculate difference of throughput percentiles
-                        difference_thpt_per_percentile = [abs(i-c) for i, c in zip(summary_initial_thpt, summary_current_thpt)]
-                        # The label
-                        difference_thpt_per_percentile.append(do_retrain)
-                        difference_thpt_per_percentile.append(f1)
-                        # Log drift data
-                        drift_data.loc[len(drift_data)] = difference_thpt_per_percentile
-                    else:
-                        # If not retrain, still log the data
-                        if len(num_rows) == data_retrain_duration_min:
-                            num_to_remove = num_rows.pop(0)
-                            pending_training_data = pending_training_data[num_to_remove:]
-                        if len(num_rows) == 0:
-                            pending_training_data = dataset_1min.copy(deep=True)
-                        else:
-                            pending_training_data = pd.concat([pending_training_data, dataset_1min], ignore_index=True)
-                        num_rows.append(len(y_pred))
-
-                        # Dataset Generation for models
-                        current_thpt = pending_training_data['size']/pending_training_data['latency']
-                        summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
-
-                        # Calculate difference of throughput percentiles
-                        difference_thpt_per_percentile = [abs(i-c) for i, c in zip(summary_initial_thpt, summary_current_thpt)]
-                        # The label
-                        difference_thpt_per_percentile.append(False)
-                        difference_thpt_per_percentile.append(f1)
-                        # Log drift data
-                        drift_data.loc[len(drift_data)] = difference_thpt_per_percentile
+                    
+                    # Dataset Generation for models
+                    current_thpt = dataset_1min['size']/dataset_1min['latency']
+                    summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
+                
+                    # Calculate difference of throughput percentiles
+                    difference_thpt_per_percentile = [abs(i-c) for i, c in zip(summary_initial_thpt, summary_current_thpt)]
+                    # The label
+                    difference_thpt_per_percentile.append(False)
+                    difference_thpt_per_percentile.append(f1)
+                    # Log drift data
+                    drift_data.loc[len(drift_data)] = difference_thpt_per_percentile
+                    
+                old_index_data_1min = index_data_1min
                 
     stats_df.to_csv(output_stats)
     print("Output file =>", output_stats)

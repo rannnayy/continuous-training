@@ -210,7 +210,7 @@ if __name__ == '__main__':
                     EVAL_CPU_TIME += psutil.cpu_times().user-cpu_eval_times.user
                     EVAL_COUNTER += len(x)
 
-                    current_thpt = pending_training_data['size']/pending_training_data['latency']
+                    current_thpt = dataset_1min['size']/dataset_1min['latency']
                     summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
 
                     roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)

@@ -133,7 +133,7 @@ if __name__ == '__main__':
     parser.add_argument("-output", help="Output CSV file name upon saving", type=str, required=True)
     args = parser.parse_args()
     
-    if (not args.no_retrain and args.dd_algo == ''):
+    if ((not args.oracle) and (not args.no_retrain) and args.dd_algo == ''):
         print('Retrain has to choose the DD algo!')
         exit()
 
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     # Logging
     params = []
     if args.oracle:
-        models = []
+        list_of_models = []
 
     # Start Training and Evaluating
     curr_ts = data_train_duration_ms
@@ -243,7 +243,7 @@ if __name__ == '__main__':
                 #     model_instance.norm = joblib.load(os.path.join(output_cycle, args.model_name + '_norm.joblib'))
                 
                 if args.oracle:
-                    models.append(model_instance)
+                    list_of_models.append(model_instance)
 
                 x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
                 y_pred = model_instance.pred(x_test)
@@ -289,7 +289,7 @@ if __name__ == '__main__':
                     roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
                     stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
                     if args.oracle:
-                        for model_id, model in enumerate(models):
+                        for model_id, model in enumerate(list_of_models):
                             y_pred = model.pred(x)
                             roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
                             stats_df.loc[len(stats_df)] = ['test_'+str(model_id), ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]        
@@ -336,7 +336,7 @@ if __name__ == '__main__':
                             TRAIN_COUNTER += 1
                             
                             if args.oracle:
-                                models.append(model_instance)
+                                list_of_models.append(model_instance)
                             
                             x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
                             y_pred = model_instance.pred(x_test)
