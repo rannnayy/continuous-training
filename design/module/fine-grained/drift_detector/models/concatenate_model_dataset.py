@@ -7,7 +7,7 @@ from imblearn.under_sampling import RandomUnderSampler
 from imblearn.over_sampling import SMOTE
 import os
 
-from models.eval import *
+from eval import *
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -47,7 +47,7 @@ if __name__ == '__main__':
             'p100': np.float64,
             'drift': np.int32,
             'roc_auc': np.float64
-        })
+        }, index_col=0)
         
         if temp_df.shape[0] > 1:
             final_dataset.append(data_path)

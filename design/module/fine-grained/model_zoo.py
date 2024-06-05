@@ -9,6 +9,7 @@ import os
 import numpy as np
 import time
 import tensorflow as tf
+import joblib
 # import sklearnex
 # patch_sklearn()
 import resource
@@ -66,17 +67,23 @@ N = {}
 
 class MatchMaker:
     def __init__(self):
-        self.model = RandomForestClassifier()
+        self.model = RandomForestClassifier(n_estimators=50, max_leaf_nodes=100)
 
-    def train(self, x_train, y_train):
+    def train(self, x, y, sample=True, save=True, model_path=None):
+        print("Sampling...")
+        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=10000, random_state=42, stratify=y)
+        print("After sampling =", len(x_train), set(y_train))
         self.model.fit(x_train, y_train)
+        print("Done training Matchmaker")
+        if save:
+            joblib.dump(self.model, model_path)
     
     def get_decision_path(self, tree, x):
         path_matrix = tree.decision_path(x)
         path_keys = []
         for i in range(len(x)):
             node_index = path_matrix.indices[path_matrix.indptr[i] : path_matrix.indptr[i + 1]]
-            path_keys.append('_'.join(node_index))
+            path_keys.append('_'.join([str(val) for val in node_index]))
         return path_keys
     
     def generate(self, x, batch_index):
@@ -87,7 +94,13 @@ class MatchMaker:
             N = {}
             for batch_id, batch in enumerate(batch_index):
                 if batch[1] > batch[0]:
-                    data = x[batch[batch_id][0]:batch[batch_id][1]]
+                    data = x[batch[0]:batch[1]]
+                    if len(data) > 500:
+                        # print(tree_id, "= Sampling for batch", batch_id, "originally", len(data))
+                        temp_df = pd.DataFrame(data)
+                        temp_df = temp_df.sample(n=100, random_state=42)
+                        data = temp_df.values
+                        # print("Resulting length", len(data))
                     keys_decision_paths = self.get_decision_path(tree, data)
                     for key in keys_decision_paths:
                         if key not in N.keys():
@@ -107,8 +120,10 @@ class MatchMaker:
         # in descending order
         sorted_rcs_dict = {k: v for k, v in sorted(rcs.items(), key=lambda item: item[1], reverse=True)}
         sorted_rcd_dict = {k: v for k, v in sorted(rcd.items(), key=lambda item: item[1], reverse=True)}
-        sorted_rcs = sorted_rcs_dict.keys()
-        sorted_rcd = sorted_rcd_dict.keys()
+        sorted_rcs = list(sorted_rcs_dict.keys())
+        sorted_rcd = list(sorted_rcd_dict.keys())
+        # print(sorted_rcs)
+        # print(sorted_rcd)
         # count the borda scores for each unique element in rcs and rcd (the unique elements are same,
         # which is the batch ID)
         # Formula: len(list)-list.index(item)-1
@@ -120,17 +135,21 @@ class MatchMaker:
     
     def inference(self, x_sample, batch_index, rcd):
         global S
+        # print("x_sample length =", len(x_sample))
+        # print("x_sample =", x_sample)
         vote_batch_chosen = {}
-        for id_sample, x in enumerate(x_sample):
+        for id_sample in range(len(x_sample)):
+            x = x_sample[id_sample:id_sample+1]
             sit = []
             for tree_id, tree in enumerate(self.model.estimators_):
-                key = self.get_decision_path(tree, x)
+                key = self.get_decision_path(tree, x.values)
                 ki = []
                 for batch_id, batch in enumerate(batch_index):
-                    if batch_id not in N[key].keys():
+                    # print(batch_id, tree_id, key[0])
+                    if (key[0] not in S[tree_id].keys()) or (batch_id not in S[tree_id][key[0]].keys()):
                         ki.append(0)
                     else:
-                        ki.append(S[tree_id][key][batch_id])
+                        ki.append(S[tree_id][key[0]][batch_id])
                 sit.append(ki)
             rcs = {}
             for batch_id, batch in enumerate(batch_index):
@@ -142,7 +161,7 @@ class MatchMaker:
             else:
                 vote_batch_chosen[chosen_batch] += 1
         most_voted_sorted = {k: v for k, v in sorted(vote_batch_chosen.items(), key=lambda item: item[1], reverse=True)}
-        most_voted_chosen = most_voted_sorted.keys()[0]
+        most_voted_chosen = list(most_voted_sorted.keys())[0]
 
         return most_voted_chosen
 
@@ -180,7 +199,6 @@ if __name__ == '__main__':
 
     # Prepare Output Directory
     timestamp = int(time.time_ns())
-    timestamp = "model_zoo_try"
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output+'.csv')
     output_vars = os.path.join(output_dir, 'parameters.txt')
@@ -268,7 +286,7 @@ if __name__ == '__main__':
 
                 # Training Period
                 if i <= args.train_period * 12:
-                    batch_index.append((old_index_data_1min, index_data_1min))
+                    batch_index.append([old_index_data_1min, index_data_1min])
 
                     # Get training throughput data for DD model dataset
                     initial_thpt = dataset_1min['size']/dataset_1min['latency']
@@ -303,8 +321,8 @@ if __name__ == '__main__':
                         y = dataset["reject"].copy(deep=True)
                         print("train whole batch", i, j, len(y))
 
-                        RF.train(x, y)
-                        RF.generate(x, batch_index)
+                        RF.train(x.values, y.values, True, True, os.path.join(output_dir, 'matchmaker.joblib'))
+                        RF.generate(x.values, batch_index)
 
                 else:
                     # Evaluation
@@ -312,7 +330,7 @@ if __name__ == '__main__':
                     eval_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
                     cpu_eval_times = psutil.cpu_times()
                     # Get sample to know which model batch to use
-                    model_index = RF.inference(x[:10], batch_index, {rcd_index:rcd[rcd_index] for rcd_index in range(len(rcd))})
+                    model_index = RF.inference(x[:5], batch_index, {rcd_index:rcd[rcd_index] for rcd_index in range(len(rcd))})
                     model_instance = list_of_models[model_index]
                     y_pred = model_instance.pred(x)
                     EVAL_TIME += default_timer()-start_eval_time
@@ -348,7 +366,6 @@ if __name__ == '__main__':
     params.append("-data_train_duration_min = "+str(data_train_duration_min))
     params.append("-data_retrain_duration_min = "+str(data_retrain_duration_min))
     params.append("-data_eval_duration_min = "+str(data_eval_duration_min))
-    params.append("-roc_auc_threshold = "+str(roc_auc_threshold))
     params.append("-batch_size = "+str(batch_size))
     params.append("-no_retrain = "+str(args.no_retrain))
     params.append("-model_algo = "+str(model_algo))

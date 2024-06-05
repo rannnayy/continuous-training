@@ -11,11 +11,11 @@ MODEL_PATH_v0 = {
     'randforest': './dd_model_experiments/models/stored_model/randforest/v0/randforest.joblib',
     'multinomialnb': './dd_model_experiments/models/stored_model/multinomialnb/v0/multinomialnb.joblib',
     'bernoullinb': './dd_model_experiments/models/stored_model/bernoullinb/v0/bernoullinb.joblib',
-    'kmeans': "./dd_model_experiments/models/stored_model/kmeans/v0/kmeans.joblib",
+    'kmeans': "/mnt/extra/continuous-training/design/module/fine-grained/drift_detector/models/stored_model/kmeans/kmeans.joblib",
     'birch': "./dd_model_experiments/models/stored_model/birch/v0/birch.joblib",
     'lof': "./dd_model_experiments/models/stored_model/lof/v0/lof.joblib",
     'xgboost': './dd_model_experiments/models/stored_model/xgboost/v0/xgboost.json',
-    'nn': './dd_model_experiments/models/stored_model/nn/v0/nn.tf'
+    'nn': '/mnt/extra/continuous-training/design/module/fine-grained/drift_detector/models/stored_model/nn/v0/nn.tf'
 }
 
 # Tune normalizer based on the model itselves later on
@@ -23,7 +23,7 @@ NORM_PATH_v0 = {
     'randforest': './dd_model_experiments/models/stored_model/randforest/v0/randforest_norm.joblib',
     'multinomialnb': './dd_model_experiments/models/stored_model/multinomialnb/v0/multinomialnb_norm.joblib',
     'bernoullinb': './dd_model_experiments/models/stored_model/bernoullinb/v0/bernoullinb_norm.joblib',
-    'kmeans': "./dd_model_experiments/models/stored_model/kmeans/v0/kmeans_norm.joblib",
+    'kmeans': "/mnt/extra/continuous-training/design/module/fine-grained/drift_detector/models/stored_model/kmeans/kmeans_norm.joblib",
     'birch': "./dd_model_experiments/models/stored_model/birch/v0/birch_norm.joblib",
     'lof': "./dd_model_experiments/models/stored_model/lof/v0/lof_norm.joblib",
     'xgboost': './dd_model_experiments/models/stored_model/xgboost/v0/xgboost_norm.joblib'
@@ -99,7 +99,8 @@ MODEL_PREDICTOR = {
     'nn': predict_nn
 }
 
-def dd_model(model_name, dataset_ver, p_thpt_diff):
+def dd_model(model_name, p_thpt_diff):
+    dataset_ver = 'v0'
     isDrift = MODEL_PREDICTOR[model_name](model_name, dataset_ver, p_thpt_diff)
     
     return isDrift

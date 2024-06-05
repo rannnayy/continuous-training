@@ -29,3 +29,20 @@ nn_clf_outlier
 nn_clf_quartile
 4.98979%
 4.9775%
+new nn_clf_ip_based
+4.14458%
+4.14468%
+new nn_clf_outlier
+4.14468%
+new nn_clf_ip_based
+4.14466%
+4.16235%
+new nn_clf_outlier
+4.16235%
+4.18075%
+new nn_clf_quartile
+4.18075%
+4.19848%
+nn_clf_labeler
+4.19848%
+4.20066%

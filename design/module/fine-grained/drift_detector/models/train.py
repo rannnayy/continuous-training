@@ -24,7 +24,7 @@ if __name__ == '__main__':
     
     for dataset_path in arr_dataset:
         print("\nTraining on " + str(dataset_path))
-        command = "python ./models/" + args.model + ".py -dataset " + dataset_path
+        command = "python ./" + args.model + ".py -dataset " + dataset_path
         subprocess.call(command, shell=True)
 
 # Example how to run:

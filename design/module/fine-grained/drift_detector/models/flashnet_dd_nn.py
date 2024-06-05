@@ -20,7 +20,7 @@ def train_model(dataset_path):
     else:
         dataset_ver = 'v1'
     
-    x_train = dataset.copy(deep=True).drop(columns=["drift", "roc_auc"], axis=1)
+    x_train = dataset.copy(deep=True).drop(columns=["drift", "f1"], axis=1)
     y_train = dataset['drift'].copy(deep=True)
 
     # Model Directory

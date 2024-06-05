@@ -17,7 +17,7 @@ def train_model(dataset_path):
     
     dataset = pd.read_csv(dataset_path)
     
-    x_train = dataset.copy(deep=True).drop(columns=["drift", "roc_auc"], axis=1)
+    x_train = dataset.copy(deep=True).drop(columns=["drift", "f1"], axis=1)
     y_train = dataset['drift'].copy(deep=True)
 
     # Data normalization with sklearn

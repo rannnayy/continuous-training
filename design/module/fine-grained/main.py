@@ -14,12 +14,13 @@ import resource
 import psutil
 from timeit import default_timer
 
-tf.config.set_visible_devices([], 'GPU')
+# tf.config.set_visible_devices([], 'GPU')
 
 from model.classification.nn import NN as NeuralNetworkClf
 from model.classification.randforest import RandomForest as RandomForestClf
 from model.regression.nn import NN as NeuralNetworkReg
 # from model.regression.randforest import RandomForest as RandomForestReg
+from model.classification.decisiontree import DecisionTree
 
 from drift_detector.Algo0IP import dd_ip as IPBased
 from drift_detector.Algo1HeuristicsOutlier import dd_lat_slope as HeuristicsBasedOutlier
@@ -53,6 +54,9 @@ TRAIN_MEMORY_USAGE = 0
 TRAIN_CPU_TIME = 0
 TRAIN_COUNTER = 0
 
+# TODO: Change! put in input
+CLF_ALGO = 'nn'
+
 def create_output_dir(output_path):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
@@ -71,11 +75,13 @@ def time_dd(time, now_time):
 def monitor(y_then, y_now, dd_algo, extra_params=[]):
     if 'time' in dd_algo:
         return time_dd(int(dd_algo.split('time_')[1].split('min')[0]), extra_params[0])
-    if dd_algo not in ['heuristics-based-labeler', 'model-cluster', 'model-networks']:
+    if dd_algo not in ['heuristics-based-labeler', 'model-cluster', 'model-clf']:
         return drift_detectors[dd_algo](y_then, y_now)
     else:
         if dd_algo == 'heuristics-based-labeler':
             return drift_detectors[dd_algo](y_then, y_now, extra_params[0], extra_params[1])
+        elif dd_algo == 'model-clf':
+            return drift_detectors[dd_algo](CLF_ALGO, extra_params[0])
         else:
             return drift_detectors[dd_algo](y_then, y_now, extra_params[0])
 
@@ -94,7 +100,8 @@ models = {
     'nn_reg': NeuralNetworkReg,
     'nn_clf': NeuralNetworkClf,
     # 'rf_reg': RandomForestReg,
-    'rf_clf': RandomForestClf
+    'rf_clf': RandomForestClf,
+    'dt_clf': DecisionTree,
 }
 
 drift_detectors = {
@@ -109,7 +116,7 @@ drift_detectors = {
     'kullback-leibler': KullbackLeiblerTest,
     'jensen-shannon': JensenShannonDistance,
     'model-cluster': ModelCluster,
-    'model-networks': ModelClf,
+    'model-clf': ModelClf,
     # 'model-autoencoder': ModelAutoencoder,
     # 'model-tree': ModelTree,
     # 'model-recurrent': ModelRNN
@@ -127,7 +134,7 @@ if __name__ == '__main__':
     parser.add_argument("-batch_size", help="Training batch size", type=int, default=BATCH_SIZE)
     parser.add_argument("-no_retrain", help="Add flag if no retraining is needed", action="store_true", default=False)
     parser.add_argument("-oracle", help="Add flag if using oracle mode", action="store_true", default=False)
-    parser.add_argument("-model_algo", help="Machine Learning algorithm to use", choices=['nn_reg', 'nn_clf', 'rf_reg', 'rf_clf'], type=str, required=True)
+    parser.add_argument("-model_algo", help="Machine Learning algorithm to use", choices=['nn_reg', 'nn_clf', 'rf_reg', 'rf_clf', 'dt_clf'], type=str, required=True)
     parser.add_argument("-model_name", help="Model's name upon saving", type=str, required=True)
     parser.add_argument("-dd_algo", help="Drift detection algorithm to use", type=str, default='')
     parser.add_argument("-output", help="Output CSV file name upon saving", type=str, required=True)
@@ -151,6 +158,7 @@ if __name__ == '__main__':
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output+'.csv')
     output_vars = os.path.join(output_dir, 'parameters.txt')
+    output_latencies = os.path.join(output_dir, 'latencies.csv')
     output_drift_data = os.path.join(output_dir, 'drift_data.csv')
     create_output_dir(output_dir)
 
@@ -175,6 +183,7 @@ if __name__ == '__main__':
     num_rows = []
     stats_df = pd.DataFrame(columns=['mode', 'minute', 'us', 'roc_auc', 'pr_auc', 'f1_score', 'accuracy', 'fnr', 'fpr', 'retrain'])
     drift_data = pd.DataFrame(columns=['p0', 'p10', 'p20', 'p30', 'p40', 'p50', 'p60', 'p70', 'p80', 'p90', 'p100', 'drift', 'f1'])
+    latencies = []
 
     output_cycle = os.path.join(output_dir, 'train')
     create_output_dir(output_cycle)
@@ -227,7 +236,7 @@ if __name__ == '__main__':
                 start_time = default_timer()
                 train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
                 cpu_times = psutil.cpu_times()
-                model_instance = models[model_algo](batch_size, x, y, 'BatchNorm')
+                model_instance = models[model_algo](batch_size, x, y, 'MinMax') # 
                 model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_0_norm.joblib'), os.path.join(output_cycle, args.model_name + ('_0.keras' if 'nn_' in model_algo else '_0.joblib')), False)
                 TRAIN_TIME += default_timer()-start_time
                 TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
@@ -285,6 +294,10 @@ if __name__ == '__main__':
                     EVAL_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - eval_mem)
                     EVAL_CPU_TIME += psutil.cpu_times().user-cpu_eval_times.user
                     EVAL_COUNTER += len(x)
+                    try:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred.tolist())])
+                    except:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred)])
 
                     roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
                     stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
@@ -319,6 +332,10 @@ if __name__ == '__main__':
                                 do_retrain = monitor(initial_lat, initial_thpt, args.dd_algo, [current_lat, current_thpt])
                             elif 'time' in args.dd_algo:
                                 do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo, [((i-1)*5) + j])
+                            elif 'model' in args.dd_algo:
+                                do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo, [[abs(i-c) for i, c in zip(summary_initial_thpt, summary_current_thpt)]])
+                            elif args.roc_auc_threshold:
+                                do_retrain = roc_auc < args.roc_auc_threshold and i > 1
                             else:
                                 do_retrain = monitor(initial_thpt, current_thpt, args.dd_algo)
                         if do_retrain:
@@ -379,7 +396,7 @@ if __name__ == '__main__':
                         difference_thpt_per_percentile.append(f1)
                         # Log drift data
                         drift_data.loc[len(drift_data)] = difference_thpt_per_percentile
-                
+
     stats_df.to_csv(output_stats)
     print("Output file =>", output_stats)
 
@@ -409,3 +426,5 @@ if __name__ == '__main__':
     params.append("Inference CPU times usage = "+str(EVAL_CPU_TIME)+" sCPU")
     params.append("Inference counter = "+str(EVAL_COUNTER))
     write_stats(output_vars, '\n'.join(params))
+
+    write_stats(output_latencies, '\n'.join(latencies))
