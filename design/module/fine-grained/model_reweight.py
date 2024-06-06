@@ -90,6 +90,7 @@ if __name__ == '__main__':
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output)
     output_vars = os.path.join(output_dir, 'parameters.txt')
+    output_latencies = os.path.join(output_dir, 'latencies.csv')
     output_drift_data = os.path.join(output_dir, 'drift_data.csv')
     create_output_dir(output_dir)
 
@@ -112,6 +113,7 @@ if __name__ == '__main__':
     num_rows = []
     stats_df = pd.DataFrame(columns=['mode', 'minute', 'us', 'roc_auc', 'pr_auc', 'f1_score', 'accuracy', 'fnr', 'fpr', 'retrain'])
     drift_data = pd.DataFrame(columns=['p0', 'p10', 'p20', 'p30', 'p40', 'p50', 'p60', 'p70', 'p80', 'p90', 'p100', 'drift', 'f1'])
+    latencies = []
 
     output_cycle = os.path.join(output_dir, 'train')
     create_output_dir(output_cycle)
@@ -209,6 +211,10 @@ if __name__ == '__main__':
                     EVAL_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - eval_mem)
                     EVAL_CPU_TIME += psutil.cpu_times().user-cpu_eval_times.user
                     EVAL_COUNTER += len(x)
+                    try:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred.tolist())])
+                    except:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred)])
 
                     current_thpt = dataset_1min['size']/dataset_1min['latency']
                     summary_current_thpt = np.array([int(np.percentile(current_thpt, x)) for x in range(0, 101, 10)])
@@ -251,3 +257,5 @@ if __name__ == '__main__':
     params.append("Inference CPU times usage = "+str(EVAL_CPU_TIME)+" sCPU")
     params.append("Inference counter = "+str(EVAL_COUNTER))
     write_stats(output_vars, '\n'.join(params))
+
+    write_stats(output_latencies, '\n'.join(latencies))

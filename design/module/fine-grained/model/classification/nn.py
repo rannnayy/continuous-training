@@ -94,3 +94,9 @@ class NN:
             x_test = self.norm.transform(x_test)
         x_test_tensor = tf.convert_to_tensor(x_test)
         return (self.dnn_model.predict(x_test_tensor, verbose=0) > 0.5).flatten()
+    
+    def pred_proba(self, x_test):
+        if self.scaler != None:
+            x_test = self.norm.transform(x_test)
+        x_test_tensor = tf.convert_to_tensor(x_test)
+        return (self.dnn_model.predict(x_test_tensor, verbose=0)).flatten()

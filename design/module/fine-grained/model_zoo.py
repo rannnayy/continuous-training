@@ -202,6 +202,7 @@ if __name__ == '__main__':
     output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.getcwd()))), 'results', str(timestamp))
     output_stats = os.path.join(output_dir, args.output+'.csv')
     output_vars = os.path.join(output_dir, 'parameters.txt')
+    output_latencies = os.path.join(output_dir, 'latencies.csv')
     output_drift_data = os.path.join(output_dir, 'drift_data.csv')
     create_output_dir(output_dir)
 
@@ -226,7 +227,8 @@ if __name__ == '__main__':
     num_rows = []
     stats_df = pd.DataFrame(columns=['mode', 'minute', 'us', 'roc_auc', 'pr_auc', 'f1_score', 'accuracy', 'fnr', 'fpr', 'retrain'])
     drift_data = pd.DataFrame(columns=['p0', 'p10', 'p20', 'p30', 'p40', 'p50', 'p60', 'p70', 'p80', 'p90', 'p100', 'drift', 'f1'])
-    
+    latencies = []
+
     output_cycle = os.path.join(output_dir, 'train')
     create_output_dir(output_cycle)
 
@@ -296,8 +298,8 @@ if __name__ == '__main__':
                     start_time = default_timer()
                     train_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
                     cpu_times = psutil.cpu_times()
-                    model_instance = models[model_algo](batch_size, x, y)
-                    model_instance.train(x, y, True, None, os.path.join(output_cycle, args.model_name + ('_' + str((i-1)*5 + j) + '.keras' if 'nn_' in model_algo else '_' + str((i-1)*5 + j) + '.joblib')), False)
+                    model_instance = models[model_algo](batch_size, x, y, 'MinMax')
+                    model_instance.train(x, y, True, os.path.join(output_cycle, args.model_name + '_' + str((i-1)*5 + j) + '_norm.joblib'), os.path.join(output_cycle, args.model_name + ('_' + str((i-1)*5 + j) + '.keras' if 'nn_' in model_algo else '_' + str((i-1)*5 + j) + '.joblib')), False)
                     TRAIN_TIME += default_timer()-start_time
                     TRAIN_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - train_mem)
                     TRAIN_CPU_TIME += psutil.cpu_times().user-cpu_times.user
@@ -306,12 +308,14 @@ if __name__ == '__main__':
                     
                     list_of_models.append(model_instance)
 
-                    miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x, y)])
+                    # miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x, y)])
+                    miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x)])
                     rcd.append(1-(miu_val/len(y)))
 
                     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)
                     y_pred = model_instance.pred(x_test)
-                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred)
+                    y_pred_transform = [0 if val == False else 1 for val in y_pred]
+                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y_test.values, y_pred_transform)
                     stats_df.loc[len(stats_df)] = ['train_' + str((i-1)*5 + j), -1, 0, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
 
                     if i == args.train_period * 12 and j == 5:
@@ -330,15 +334,20 @@ if __name__ == '__main__':
                     eval_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0
                     cpu_eval_times = psutil.cpu_times()
                     # Get sample to know which model batch to use
-                    model_index = RF.inference(x[:5], batch_index, {rcd_index:rcd[rcd_index] for rcd_index in range(len(rcd))})
+                    model_index = RF.inference(x[:10], batch_index, {rcd_index:rcd[rcd_index] for rcd_index in range(len(rcd))})
                     model_instance = list_of_models[model_index]
                     y_pred = model_instance.pred(x)
+                    y_pred_transform = [0 if val == False else 1 for val in y_pred]
                     EVAL_TIME += default_timer()-start_eval_time
                     EVAL_MEMORY_USAGE += (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024.0/1024.0 - eval_mem)
                     EVAL_CPU_TIME += psutil.cpu_times().user-cpu_eval_times.user
                     EVAL_COUNTER += len(x)
+                    try:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred.tolist())])
+                    except:
+                        latencies.extend([str(x)+","+str(y) for x, y in zip(dataset_1min['latency'].tolist(), y_pred)])
 
-                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred)
+                    roc_auc, pr_auc, f1, acc, fnr, fpr = eval(y.values, y_pred_transform)
                     stats_df.loc[len(stats_df)] = ['test', ((i-1)*5) + j, ((i-1)*5 + j) * data_eval_duration_ms, roc_auc, pr_auc, f1, acc, fnr, fpr, False]
                     
                     # Dataset Generation for models
@@ -383,3 +392,5 @@ if __name__ == '__main__':
     params.append("Inference CPU times usage = "+str(EVAL_CPU_TIME)+" sCPU")
     params.append("Inference counter = "+str(EVAL_COUNTER))
     write_stats(output_vars, '\n'.join(params))
+
+    write_stats(output_latencies, '\n'.join(latencies))
