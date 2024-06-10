@@ -264,14 +264,15 @@ if __name__ == '__main__':
         if eval_mode:
             # Eval Mode
             # One chunk has 5 mins of data
-            for j in range(1, 6):
+            for j in range(1, 6, data_eval_duration_min):
                 print("*"*20, j)
                 curr_ts += data_eval_duration_ms
-                index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * data_eval_duration_ms).idxmax()
+                index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * 60 * 1000).idxmax()
+                print(index_data_1min, len(dataset), dataset['ts_record'].tail(1).values, ((i-1)*5 + j) * 60 * 1000)
 
                 if index_data_1min > 0:
 
-                    print("Taking", ((i-1)*5 + j) * data_eval_duration_ms)
+                    print("Taking", ((i-1)*5 + j) * 60 * 1000)
                     print("Number of data for #", ((i-1)*5) + j, "eval", index_data_1min)
                     dataset_1min = dataset[:index_data_1min]
                     dataset = dataset[index_data_1min:]

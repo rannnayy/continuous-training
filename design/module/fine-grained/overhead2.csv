@@ -35,3 +35,9 @@ nn_clf_ks
 nn_clf_ph
 4.14932%
 4.20386%
+nn_clf_noretrain
+0.735992%
+0.736698%
+nn_clf_ks
+0.736381%
+0.741748%

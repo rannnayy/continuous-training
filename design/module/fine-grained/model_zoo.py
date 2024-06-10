@@ -308,8 +308,8 @@ if __name__ == '__main__':
                     
                     list_of_models.append(model_instance)
 
-                    # miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x, y)])
-                    miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x)])
+                    miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x, y)])
+                    # miu_val = sum([(1-val)**2 for val in model_instance.pred_proba(x)])
                     rcd.append(1-(miu_val/len(y)))
 
                     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.5, random_state=42)

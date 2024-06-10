@@ -30,7 +30,7 @@ class DecisionTree:
             x_train = self.norm.transform(x_train)
 
         # Train the model
-        self.model = self.model.fit(x_train.values, y_train.values)
+        self.model = self.model.fit(x_train, y_train)
 
         # Save
         if save:
@@ -43,14 +43,14 @@ class DecisionTree:
     def pred(self, x_test):
         if self.scaler != None:
             x_test = self.norm.transform(x_test)
-        return self.model.predict(x_test.values)
+        return self.model.predict(x_test)
 
     def pred_proba(self, x_test, y_test):
         if self.scaler != None:
             x_test = self.norm.transform(x_test)
         classes = self.model.classes_.tolist()
         y_classes_idx = [classes.index(y) for y in y_test.tolist()]
-        probabilities = self.model.predict_proba(x_test.values).tolist()
+        probabilities = self.model.predict_proba(x_test).tolist()
         correct_probabilities = [x_probas[y_idx] for x_probas, y_idx in zip(probabilities, y_classes_idx)]
 
         return correct_probabilities
