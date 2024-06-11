@@ -114,3 +114,11 @@ dt_clf_noretrain_2
 dt_clf_noretrain_5
 0.736656%
 0.73671%
+new nn_clf_quartile
+0.733111%
+0.733225%
+nn_clf_kl
+0.733225%
+0.733332%
+new nn_clf_quartile
+0.733448%

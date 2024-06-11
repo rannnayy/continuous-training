@@ -46,3 +46,26 @@ new nn_clf_quartile
 nn_clf_labeler
 4.19848%
 4.20066%
+threshold nn_clf_outlier 10%
+0.729922%
+0.730048%
+threshold nn_clf_outlier 5%
+0.730056%
+0.730211%
+threshold nn_clf_outlier 15%
+0.730221%
+0.730384%
+threshold nn_clf_outlier 30%
+0.730263%
+0.730384%
+threshold nn_clf_outlier 30%
+0.730429%
+threshold nn_clf_outlier 1%
+0.730489%
+0.730728%
+threshold nn_clf_outlier 0.5%
+0.730764%
+0.731149%
+threshold nn_clf_outlier 1%
+0.731269%
+0.733754%

@@ -67,11 +67,11 @@ N = {}
 
 class MatchMaker:
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=50, max_leaf_nodes=100)
+        self.model = RandomForestClassifier(n_estimators=100, max_leaf_nodes=100)
 
     def train(self, x, y, sample=True, save=True, model_path=None):
         print("Sampling...")
-        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=10000, random_state=42, stratify=y)
+        x_train, x_test, y_train, y_test = train_test_split(x, y, train_size=5000, random_state=42, stratify=y)
         print("After sampling =", len(x_train), set(y_train))
         self.model.fit(x_train, y_train)
         print("Done training Matchmaker")

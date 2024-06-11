@@ -128,7 +128,7 @@ if __name__ == '__main__':
     parser.add_argument("-dataset_name", help="Name of dataset file", type=str, required=True)
     parser.add_argument("-data_train_duration_min", help="Data duration used for training", type=int, default=DATA_TRAIN_DURATION_MIN)
     parser.add_argument("-data_retrain_duration_min", help="Data duration used for retraining (If not set, the window will be set equal to data_train_duration_min)", type=int, default=DATA_RETRAIN_DURATION_MIN)
-    parser.add_argument("-data_eval_duration_min", help="Data duration used for each evaluation", type=int, default=DATA_EVAL_DURATION_MIN)
+    parser.add_argument("-data_eval_duration_min", help="Data duration used for each evaluation", type=float, default=DATA_EVAL_DURATION_MIN)
     parser.add_argument("-eval_period", help="Period of data for evaluation (hour)", type=float, default=1)
     parser.add_argument("-roc_auc_threshold", help="ROC-AUC threshold for retraining (if using simple retraining condition, not specifying -model_algo)", type=float)
     parser.add_argument("-batch_size", help="Training batch size", type=int, default=BATCH_SIZE)
@@ -264,7 +264,7 @@ if __name__ == '__main__':
         if eval_mode:
             # Eval Mode
             # One chunk has 5 mins of data
-            for j in range(1, 6, data_eval_duration_min):
+            for j in [int(ctr*data_eval_duration_min) for ctr in range(int(6//data_eval_duration_min))]:
                 print("*"*20, j)
                 curr_ts += data_eval_duration_ms
                 index_data_1min = (dataset['ts_record'] >= ((i-1)*5 + j) * 60 * 1000).idxmax()

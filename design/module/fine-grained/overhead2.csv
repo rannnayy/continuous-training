@@ -41,3 +41,40 @@ nn_clf_noretrain
 nn_clf_ks
 0.736381%
 0.741748%
+threshold nn_clf_quartile 10%
+0.729926%
+0.73005%
+threshold nn_clf_quartile 5%
+0.730055%
+0.730212%
+threshold nn_clf_quartile 15%
+0.73022%
+0.730384%
+threshold nn_clf_quartile 30%
+0.730264%
+0.730384%
+threshold nn_clf_quartile 30%
+0.730377%
+threshold nn_clf_quartile 1%
+0.730495%
+0.730695%
+threshold nn_clf_quartile 0.5%
+0.730766%
+0.731033%
+threshold nn_clf_quartile 0.25%
+0.73127%
+0.733469%
+new nn_clf_outlier
+0.733104%
+nn_clf_ks
+0.733166%
+0.733215%
+nn_clf_ph
+0.733215%
+0.733301%
+0.733334%
+nn_clf_ks
+0.733346%
+0.733346%
+new nn_clf_outlier
+0.733447%

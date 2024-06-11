@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Tolerable spikes
-SPIKE_THRESHOLD = 10 # in percentage
+SPIKE_THRESHOLD = 0.25 # in percentage
 
 def count_quartile(data):
     q75 = data.quantile(0.75)

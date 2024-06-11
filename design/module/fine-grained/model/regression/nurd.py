@@ -366,7 +366,7 @@ def fun_cum_tpr(kl_input: list, alpha: float) -> np.array:
 random_state = 42
 gamma = 0
 pt = 0.2    # Training set size (in NURD repo, in argument description the pt is default to be 0.2)
-tail = 0.9
+tail = 0.99
 
 # 0 - 100
 # p0 - p20: trainning set (train on the fast IO)
